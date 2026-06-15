@@ -14,10 +14,23 @@ The only external runtime dependency is the `claude` CLI itself. Python 3.10+,
 standard library only. Tests run entirely against a stub `claude` — never the
 real CLI.
 
+For the design rationale and module-level walkthrough, see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Requirements
+
+- Python 3.10+ (standard library only — no third-party runtime dependencies).
+- A working `claude` CLI on `PATH` (or pointed at via `claude_command`) for
+  **real** runs. The test suite needs none of this — it runs against a stub.
+
 ## Install
 
 ```bash
+# from a local checkout
 pip install -e .
+
+# or straight from git
+pip install "git+https://github.com/RandyHaylor/claude-code-cli-runner.git"
 ```
 
 ## The three faces
@@ -184,6 +197,40 @@ Control intents (write a JSONL line into the control channel):
 - `{"control_intent": "resume"}`
 - `{"control_intent": "send_command", "command_text": "..."}`
 - `{"control_intent": "end_and_return"}`
+
+Run states reflected into `task_run_status.json` are `running`, `paused`, and
+`operator_ended` (the last is set only by an `end_and_return` intent).
+
+### Consuming the live log and driving controls
+
+While a run is in progress (e.g. from another thread/process), tail the live log
+and write control intents. The package ships the helpers for both directions:
+
+```python
+import json, time
+from claude_code_cli_runner import live_log_path
+from claude_code_cli_runner.live_files import append_control_intent
+
+ws = "/path/to/workspace"
+
+# Read: tail the append-only JSONL live log.
+with open(live_log_path(ws), "r", encoding="utf-8") as fh:
+    for line in fh:                      # each line: {"received_at": ..., "chunk": {...}}
+        record = json.loads(line)
+        print(record.get("chunk") or record.get("raw"))
+
+# Write: drive the out-of-band control channel.
+append_control_intent(ws, "pause")
+append_control_intent(ws, "send_command", command_text="also check the logs")
+append_control_intent(ws, "resume")
+append_control_intent(ws, "end_and_return")
+```
+
+A `pause` blocks the runner's stream-consumption loop until a `resume` (or
+`end_and_return`) arrives; `send_command` injects a mid-run user turn over the
+process's still-open stdin; `end_and_return` stops the run early and sets
+`operator_ended=True` on the result. The same control channel is exposed on the
+CLI as `python3 -m claude_code_cli_runner control --workspace /ws --intent ...`.
 
 ## Examples (offline, against the stub)
 
