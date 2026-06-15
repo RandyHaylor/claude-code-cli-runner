@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-code-cli-runner"
+version = "0.1.0"
+description = "Generic, reusable streaming runner for `claude -p` tasks: location-agnostic, multimodal in and out."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+claude-code-cli-runner = "claude_code_cli_runner.__main__:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["claude_code_cli_runner"]
