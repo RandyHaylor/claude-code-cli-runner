@@ -30,7 +30,7 @@ and no queue/runner state machine. Those belong to a thin consumer-side adapter
 | `result.py` | The `RunResult` dataclass + `to_dict()`. Multimodal-aware: assistant text **and** produced artifacts, plus exit/status and the live-log path. |
 | `live_files.py` | The on-disk live-window contract: the three file names, the run-state values, the four control intents, and the read/write helpers around them. The load-bearing names live here in one place so every face agrees. |
 | `__main__.py` | The CLI face: `run` / `serve` / `control` subcommands. Builds a `RunRequest` from argv and drives the same core. Also the `claude-code-cli-runner` console script. |
-| `http_server.py` | The optional streaming HTTP face: `POST /run` runs the core in a background thread and streams the growing live log back, then a final `{"run_result": {...}}` line. Ships `request_from_json`, `build_streaming_http_server`, `run_streaming_http_server`, and a small `post_run` client. |
+| `http_server.py` | The optional streaming HTTP face: `POST /run` runs the core in a background thread, emits a `{"run_started": {run_id, workspace_token}}` line, streams the growing live log back, then a final `{"run_result": {...}}` line. `POST /control` writes a control intent into a run's control channel (run identity = `workspace_token` = workspace_directory). Ships `request_from_json`, `build_streaming_http_server`, `run_streaming_http_server`, the incremental `stream_run` client, the buffered `post_run` client, and `post_control`. |
 | `__init__.py` | Public surface: `run_claude_code_task`, `RunRequest`, `RunResult`, the content blocks, and the live-window names/intents/path helpers. |
 
 ## Data flow
@@ -138,7 +138,7 @@ branch in `build_command_for`. Everything downstream is untouched.
 |---|---|---|
 | Library | `run_claude_code_task(RunRequest(...))` | Direct call; returns a `RunResult`. |
 | CLI | `python3 -m claude_code_cli_runner run\|serve\|control` | Builds a `RunRequest` from argv, calls the core, prints the `RunResult` JSON. `control` writes the control channel; `serve` starts the HTTP face. |
-| HTTP | `POST /run` (`build/run_streaming_http_server`, `post_run`) | Parses JSON into a `RunRequest`, runs the core on a background thread, streams the live log back, then a final `{"run_result": {...}}`. |
+| HTTP | `POST /run` + `POST /control` (`build/run_streaming_http_server`, `stream_run`/`post_run`, `post_control`) | `/run` parses JSON into a `RunRequest`, runs the core on a background thread, emits a `run_started` identity line, streams the live log back incrementally, then a final `{"run_result": {...}}`. `/control` forwards a control intent into the run's control channel keyed by `workspace_token`. |
 
 All three converge on the same `run_claude_code_task`. The faces differ only in
 how a `RunRequest` is constructed and how a `RunResult` is surfaced.

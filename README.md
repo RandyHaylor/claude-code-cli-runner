@@ -86,18 +86,49 @@ python3 -m claude_code_cli_runner serve --port 8765
 ```
 
 ```python
-from claude_code_cli_runner.http_server import post_run
+from claude_code_cli_runner.http_server import post_run, stream_run, post_control
+
+# Buffered convenience client:
 outcome = post_run("http://127.0.0.1:8765", {
     "input_content": [{"block_type": "text", "text": "hello"}],
     "workspace_directory": "/path/to/workspace",
 })
+# outcome["run_id"]     -> the run identity (== workspace_token) for /control
 # outcome["lines"]      -> the live-log records streamed as the run progressed
 # outcome["run_result"] -> the final RunResult dict
+
+# INCREMENTAL streaming client: yields each line as it arrives (real-time tee):
+gen = stream_run("http://127.0.0.1:8765", request_json)
+for item in gen:           # run_started line, then each live-log record
+    handle(item)
+# the final run_result is the generator's return value (StopIteration.value)
 ```
 
-`POST /run` streams the live-log JSONL lines back as they arrive (chunked), then
-a final `{"run_result": {...}}` line. Entry points:
-`build_streaming_http_server`, `run_streaming_http_server`, `post_run`.
+`POST /run` first emits a `{"run_started": {"run_id", "workspace_token"}}` line
+identifying the run, then streams the live-log JSONL lines as they arrive
+(chunked), then a final `{"run_result": {...}}` line.
+
+**Driving an in-flight run over HTTP** — `POST /control`:
+
+```python
+post_control("http://127.0.0.1:8765", workspace_token, "pause")
+post_control("http://127.0.0.1:8765", workspace_token, "send_command",
+             command_text="also check the logs")
+post_control("http://127.0.0.1:8765", workspace_token, "end_and_return")
+```
+
+**Run identity (simplest correct scheme):** a run is identified by its
+`workspace_token`, which IS its `workspace_directory` (where the control channel
+lives). `run_id` is accepted as an alias. `/control` simply appends the intent
+into that workspace's `task_control_channel.jsonl`; the running task drains it out
+of band. No server-side registry is needed because the per-workspace control
+channel is already the rendezvous. (Limitation: a remote caller must therefore
+know/agree on the workspace path; if two runs ever shared a workspace, controls
+would target whichever run is reading that channel — runs should use distinct
+workspaces.)
+
+Entry points: `build_streaming_http_server`, `run_streaming_http_server`,
+`stream_run` (incremental), `post_run` (buffered), `post_control`.
 
 ## run_request shape
 
