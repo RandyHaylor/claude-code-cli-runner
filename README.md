@@ -187,9 +187,16 @@ Wire shape (`POST /run` JSON), same block types as `input_content`:
 `enable_session_reuse` is `True`, the runner:
 
 1. **Primes once** per `chunk_id`: if the id is not yet registered, it runs a
-   throwaway `claude --session-id <new_primed_sid> -p` priming session that
-   ingests ONLY the chunk over stdin, then records `chunk_id -> primed_sid` in
-   the on-disk registry.
+   throwaway, **self-completing** `claude --session-id <new_primed_sid> -p
+   "<chunk text>"` priming session — a plain `-p` call with the chunk as the
+   positional prompt and **no** stream-json flags and **no** stdin, so claude
+   ingests the chunk and exits 0 on its own. On exit 0 it records
+   `chunk_id -> primed_sid` in the on-disk registry. (The earlier streaming
+   prime over stdin never produced a result and so never persisted a session;
+   the simple completing call does.) Only **text-only** chunks are primed this
+   way; a chunk containing image/document blocks cannot be carried as a `-p`
+   positional prompt, so it is **not** primed and the run falls back to inline
+   (multimodal chunk priming is a deferred enhancement).
 2. **Forks per task**: it runs the task as
    `claude --resume <primed_sid> --fork-session --session-id <fresh_task_sid> -p`,
    sending ONLY the per-task `input_content` over stdin. The chunk is already in
@@ -208,7 +215,9 @@ purely an optimization. The chunk is instead **prepended inline** to
 
 - `enable_session_reuse` is `False`, OR
 - no `reusable_context` is supplied, OR
-- priming/forking raises or errors (e.g. claude rejects `--resume`).
+- the chunk is **not text-only** (contains image/document blocks), OR
+- priming/forking raises or errors (e.g. the prime exits non-zero or times out,
+  or claude rejects `--resume`).
 
 On a reuse failure the task still completes via the inline path, a
 `{"runner_note": ...}` record is written to the live log, and the unusable

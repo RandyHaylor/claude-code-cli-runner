@@ -25,7 +25,7 @@ and no queue/runner state machine. Those belong to a thin consumer-side adapter
 |---|---|
 | `request.py` | The `RunRequest` dataclass + the multimodal input content-block types (`TextBlock` / `ImageBlock` / `DocumentBlock`) + `SshConfig` and the `execution_location` constants. Pure data; validates `execution_location` in `__post_init__`. |
 | `content.py` | Serialize input content blocks into the stream-json user message `content` array; build the injected (`send_command`) user message; snapshot the workspace and diff it to list **produced artifacts** (multimodal out). |
-| `transports.py` | The transport seam: `build_command_for(request) -> argv`. The ONLY place `execution_location` branches. Local runs `claude` directly; `vm_over_ssh` / `remote_host` wrap the same claude argv in `ssh`. Holds the VM-name→IP DHCP resolution seam. Also builds the optional session-reuse argvs: `build_priming_claude_argv` (base + plain `--session-id`) and `build_fork_claude_argv` (base + `--resume <primed> --fork-session --session-id <fresh>`). |
+| `transports.py` | The transport seam: `build_command_for(request) -> argv`. The ONLY place `execution_location` branches. Local runs `claude` directly; `vm_over_ssh` / `remote_host` wrap the same claude argv in `ssh`. Holds the VM-name→IP DHCP resolution seam. Also builds the optional session-reuse argvs: `build_priming_claude_argv` (a SIMPLE self-completing `claude --session-id <primed> -p "<chunk text>"` — no stream-json flags, prompt as positional arg) and `build_fork_claude_argv` (streaming base + `--resume <primed> --fork-session --session-id <fresh>`). |
 | `runner.py` | The single streaming execution core (`_stream_one_run`): launch the subprocess, deliver the prompt over stdin, append every chunk to the live log, honour the control channel, reflect run-state, and assemble the `RunResult`. Also the optional prime-once/fork-per-task orchestration (`_run_with_session_reuse`, `_run_priming_session`) with the always-correct inline fallback. |
 | `session_registry.py` | The optional on-disk reusable-session registry: a JSON map `{chunk_id: primed_session_id}` (default `~/.claude_code_cli_runner/reusable_sessions.json`, overridable via env / arg). Read/modify/atomic-replace under a lock. Backs prime-once/fork; never correctness-critical. |
 | `result.py` | The `RunResult` dataclass + `to_dict()`. Multimodal-aware: assistant text **and** produced artifacts, plus exit/status and the live-log path. |
@@ -97,10 +97,13 @@ reusable_context present AND enable_session_reuse?
                           input = chunk-prepended-inline-if-any + task)   # always correct
    yes -> primed_sid = registry.get(chunk_id)
           if missing:
+              chunk_text = extract_text_only(chunk)   # None if any non-text block
+              if chunk_text is None: raise -> fall back inline (multimodal deferred)
               primed_sid = "primed-<chunk_id>-<rand>"
-              _run_priming_session(build_priming_claude_argv(req, primed_sid),
-                                   stdin = chunk ONLY)        # ingest chunk once
-              registry.record(chunk_id -> primed_sid)
+              # SIMPLE self-completing prime: claude --session-id <sid> -p "<chunk text>"
+              # NO stdin (stdin=DEVNULL), default output (not parsed), success = exit 0.
+              _run_priming_session(build_priming_claude_argv(req, primed_sid, chunk_text))
+              registry.record(chunk_id -> primed_sid)   # only on exit 0
           task_sid = "task-<chunk_id>-<rand>"
           _stream_one_run(argv  = build_fork_claude_argv(req, primed_sid, task_sid),
                           input = task input ONLY)            # chunk NOT re-sent
@@ -111,10 +114,12 @@ reusable_context present AND enable_session_reuse?
 The chunk is therefore sent to claude exactly **once** (the prime); every later
 task with the same `chunk_id` skips priming and forks straight off the recorded
 primed session, so the chunk's tokens are cache-reused. The priming run is a
-throwaway (it is not part of the live window); only the forked **task** run
-streams, writes the live-window files, and produces the `RunResult` — exactly as
-a normal run does. Because reuse is wrapped in a catch-all that falls back to the
-inline-prepend path, a disabled, absent, or failing reuse never fails the task.
+throwaway (it is not part of the live window) and is a plain completing `-p`
+call — it must run to completion on its own, since (unlike the streaming task
+run) nothing drains its output; only the forked **task** run streams, writes the
+live-window files, and produces the `RunResult` — exactly as a normal run does.
+Because reuse is wrapped in a catch-all that falls back to the inline-prepend
+path, a disabled, absent, non-text, or failing reuse never fails the task.
 
 ## Streaming + control-channel model
 

@@ -23,6 +23,7 @@ import uuid
 from .content import (
     build_injected_user_message,
     build_user_message,
+    extract_text_only,
     list_produced_artifacts,
     snapshot_workspace_files,
 )
@@ -130,12 +131,19 @@ def _run_with_session_reuse(
         )
         notes = []
         if primed_sid is None:
-            # PRIME ONCE: run a session that ingests ONLY the chunk, record its id.
+            # PRIME ONCE: run a SIMPLE completing claude that ingests ONLY the
+            # chunk (as a text prompt), record its id. Only text-only chunks can
+            # be primed this way; a non-text chunk raises -> inline fallback.
+            chunk_text = extract_text_only(list(reuse.content))
+            if chunk_text is None:
+                raise RuntimeError(
+                    "reusable_context %r is not text-only; "
+                    "simple priming unsupported (multimodal priming deferred)"
+                    % chunk_id
+                )
             primed_sid = "primed-%s-%s" % (chunk_id, uuid.uuid4().hex[:8])
-            prime_argv = build_priming_claude_argv(run_request, primed_sid)
-            _run_priming_session(
-                run_request, argv=prime_argv, chunk_content=list(reuse.content)
-            )
+            prime_argv = build_priming_claude_argv(run_request, primed_sid, chunk_text)
+            _run_priming_session(run_request, argv=prime_argv)
             session_registry.record_primed_session_id(
                 chunk_id, primed_sid, registry_path=registry_path
             )
@@ -170,46 +178,35 @@ def _run_with_session_reuse(
         )
 
 
-def _run_priming_session(run_request: RunRequest, *, argv, chunk_content) -> None:
-    """Run a brief claude session that ingests the chunk, then ends. Not part of
-    the live window — its only purpose is to leave a reusable primed session
-    behind. Raises on a non-zero/failed invocation so the caller can fall back."""
+def _run_priming_session(run_request: RunRequest, *, argv) -> None:
+    """Run the SIMPLE, self-completing priming claude (``claude --session-id <sid>
+    -p "<chunk text>"``) that leaves a reusable primed session behind, then
+    exits. It takes NO stdin (the prompt is on argv), produces default output we
+    do NOT parse, and is expected to exit 0 on its own.
+
+    Not part of the live window. Raises on a non-zero exit, a timeout, or any
+    launch failure so the caller can fall back to inline.
+    """
     workspace_directory = os.fspath(run_request.workspace_directory)
     os.makedirs(workspace_directory, exist_ok=True)
     process = subprocess.Popen(
         argv,
         cwd=workspace_directory,
-        stdin=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        bufsize=1,
     )
+    timeout = run_request.timeout_seconds or None
     try:
-        if process.stdin is not None:
-            process.stdin.write(json.dumps(build_user_message(chunk_content)) + "\n")
-            process.stdin.flush()
-    except (BrokenPipeError, ValueError, OSError):
-        pass
-    # Drain stdout until the session ends (result event) or the process exits.
-    saw_result = False
-    if process.stdout is not None:
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                chunk = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(chunk, dict) and chunk.get("type") == "result":
-                saw_result = True
-                break
-    _terminate_process(process)
-    exit_code = process.poll()
-    if not saw_result and exit_code not in (0, None):
+        _stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process(process)
+        raise RuntimeError("priming claude timed out after %rs" % timeout)
+    if process.returncode != 0:
         raise RuntimeError(
-            "priming claude exited %r without a result event" % exit_code
+            "priming claude exited %r: %s"
+            % (process.returncode, (stderr or "").strip())
         )
 
 

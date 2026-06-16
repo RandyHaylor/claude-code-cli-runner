@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from claude_code_cli_runner import (
+    ImageBlock,
     ReusableContext,
     RunRequest,
     TextBlock,
@@ -61,12 +62,20 @@ def test_first_run_primes_and_task_forks(tmp_path, monkeypatch):
     primed_sid = session_registry.get_primed_session_id("chunkA", registry_path=registry)
     assert primed_sid and primed_sid.startswith("primed-chunkA-")
 
-    # Two Popens: [0] prime (plain --session-id), [1] task (fork).
+    # Two Popens: [0] prime (SIMPLE completing call), [1] task (fork).
     assert len(captured) == 2
     prime_argv, task_argv = captured
+    # The prime is the SIMPLE form: --session-id + -p <chunk text>, and it must
+    # NOT use the streaming stream-json flags (it completes on its own).
     assert "--session-id" in prime_argv
     assert primed_sid in prime_argv
     assert "--resume" not in prime_argv
+    assert "-p" in prime_argv
+    assert prime_argv[prime_argv.index("-p") + 1] == "big leading reusable context"
+    assert "--input-format" not in prime_argv
+    assert "stream-json" not in prime_argv
+    assert "--output-format" not in prime_argv
+    assert "--include-partial-messages" not in prime_argv
 
     # The task run forks from the primed sid with a FRESH task sid.
     assert "--resume" in task_argv
@@ -154,6 +163,40 @@ def test_disable_reuse_prepends_inline_no_registry_write(tmp_path, monkeypatch):
     assert "--resume" not in captured[0]
     log = _read_log(result.live_log_path)
     assert "leading chunk inline" in log
+    assert "task body" in log
+
+
+def test_non_text_chunk_falls_back_inline_no_prime(tmp_path, monkeypatch):
+    registry = str(tmp_path / "reg.json")
+    captured = _capture_popen(monkeypatch)
+
+    # A chunk with a non-text (image) block can't be primed via the SIMPLE
+    # completing -p call -> the runner must NOT prime, and falls back to inline.
+    request = RunRequest(
+        input_content=[TextBlock(text="task body")],
+        workspace_directory=str(tmp_path / "ws"),
+        claude_command=STUB_AS_CLAUDE,
+        reusable_context=ReusableContext(
+            chunk_id="chunkIMG",
+            content=[
+                TextBlock(text="some caption"),
+                ImageBlock(mime_type="image/png", data_base64="aGVsbG8="),
+            ],
+        ),
+    )
+    result = run_claude_code_task(
+        request, build_command=stub_build_command, registry_path=registry
+    )
+
+    # Only one Popen (the inline task run); no prime was attempted.
+    assert len(captured) == 1
+    assert "-p" not in captured[0] or "--resume" not in captured[0]
+    assert "--resume" not in captured[0]
+    # Nothing recorded for this chunk; fallback note present.
+    assert session_registry.get_primed_session_id("chunkIMG", registry_path=registry) is None
+    log = _read_log(result.live_log_path)
+    assert "runner_note" in log
+    assert "falling back to inline" in log
     assert "task body" in log
 
 

@@ -66,6 +66,27 @@ def serialize_block(block) -> dict:
     raise ValueError("unsupported content block: %r" % (block,))
 
 
+def extract_text_only(blocks: list) -> "str | None":
+    """Join an all-text block list into a single prompt string, or return None
+    if ANY block is non-text (image/document).
+
+    Used by the SIMPLE priming path: a completing ``claude -p "<text>"`` can only
+    carry text as a positional prompt, so a chunk containing image/document
+    blocks is NOT text-only-primable (the caller falls back to inline, which
+    delivers the multimodal blocks over stdin as usual). Multimodal chunk
+    priming is a deferred enhancement.
+    """
+    parts = []
+    for block in blocks:
+        is_text = isinstance(block, TextBlock) or (
+            getattr(block, "block_type", None) == BLOCK_TYPE_TEXT
+        )
+        if not is_text:
+            return None
+        parts.append(block.text)
+    return "\n".join(parts)
+
+
 def build_user_message(input_content: list) -> dict:
     """Build the stream-json ``user`` message that carries the full multimodal
     input as a content array. This is written to the process stdin to deliver

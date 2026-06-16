@@ -46,17 +46,31 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
     return argv
 
 
-def build_priming_claude_argv(run_request: RunRequest, primed_session_id: str) -> "list[str]":
-    """Argv for a PRIMING run: a normal streaming claude that creates a NEW
-    session with a caller-chosen id (``--session-id``). The reusable context
-    chunk is delivered over stdin as the user message; the resulting session is
-    recorded so later tasks can fork from it.
+def build_priming_claude_argv(
+    run_request: RunRequest, primed_session_id: str, chunk_text: str
+) -> "list[str]":
+    """Argv for a PRIMING run: a SIMPLE, self-completing ``claude -p`` invocation
+    that creates a NEW session with a caller-chosen id (``--session-id``) and
+    ingests the chunk as a positional prompt.
 
-    Same verified base argv as a normal run, plus a plain ``--session-id`` so
-    the session has a stable, reusable id.
+    VERIFIED against real claude: the streaming base argv (stream-json in/out,
+    chunk over stdin) does NOT complete a priming session — no result is ever
+    produced, so priming always failed and reuse fell back to inline. A plain
+    completing call DOES persist a forkable primed session:
+
+        claude [--model M] [--dangerously-skip-permissions] \\
+               --session-id <primed_sid> -p "<chunk text>"
+
+    NO --output-format/--input-format/--include-partial-messages/--verbose and
+    NO stdin: the prompt is the positional arg, and claude exits 0 on its own.
+    Later task runs fork this session (the chunk is then a cache read).
     """
-    argv = build_base_claude_argv(run_request)
-    argv += ["--session-id", primed_session_id]
+    argv = [run_request.claude_command]
+    if run_request.model:
+        argv += ["--model", run_request.model]
+    if run_request.dangerously_skip_permissions:
+        argv += ["--dangerously-skip-permissions"]
+    argv += ["--session-id", primed_session_id, "-p", chunk_text]
     return argv
 
 

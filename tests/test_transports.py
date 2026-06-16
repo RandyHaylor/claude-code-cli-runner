@@ -54,13 +54,22 @@ def test_ssh_host_resolved_from_vm_name_seam(monkeypatch):
     assert "agent-user@192.168.122.99" in argv
 
 
-def test_priming_argv_has_plain_session_id_no_resume():
+def test_priming_argv_is_simple_completing_call():
     request = RunRequest(input_content=[], workspace_directory="/tmp/ws")
-    argv = transports.build_priming_claude_argv(request, "primed-xyz")
+    argv = transports.build_priming_claude_argv(request, "primed-xyz", "chunk text here")
+    # Plain --session-id + positional -p prompt; NO resume/fork.
     assert "--session-id" in argv
     assert argv[argv.index("--session-id") + 1] == "primed-xyz"
+    assert "-p" in argv
+    assert argv[argv.index("-p") + 1] == "chunk text here"
     assert "--resume" not in argv
     assert "--fork-session" not in argv
+    # NOT the streaming form: it must complete on its own.
+    assert "--input-format" not in argv
+    assert "--output-format" not in argv
+    assert "--include-partial-messages" not in argv
+    assert "--verbose" not in argv
+    assert "stream-json" not in argv
 
 
 def test_fork_argv_resumes_primed_and_forks_to_fresh():
