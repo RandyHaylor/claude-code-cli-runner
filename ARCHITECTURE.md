@@ -27,7 +27,8 @@ and no queue/runner state machine. Those belong to a thin consumer-side adapter
 | `content.py` | Serialize input content blocks into the stream-json user message `content` array; build the injected (`send_command`) user message; snapshot the workspace and diff it to list **produced artifacts** (multimodal out). |
 | `transports.py` | The transport seam: `build_command_for(request) -> argv`. The ONLY place `execution_location` branches. Local runs `claude` directly; `vm_over_ssh` / `remote_host` wrap the same claude argv in `ssh`. Holds the VM-name→IP DHCP resolution seam. Also builds the optional session-reuse argvs: `build_priming_claude_argv` (a SIMPLE self-completing `claude --session-id <primed> -p "<chunk text>"` — no stream-json flags, prompt as positional arg) and `build_fork_claude_argv` (streaming base + `--resume <primed> --fork-session --session-id <fresh>`). |
 | `runner.py` | The single streaming execution core (`_stream_one_run`): launch the subprocess, deliver the prompt over stdin, append every chunk to the live log, honour the control channel, reflect run-state, and assemble the `RunResult`. Also the optional prime-once/fork-per-task orchestration (`_run_with_session_reuse`, `_run_priming_session`) with the always-correct inline fallback. |
-| `session_registry.py` | The optional on-disk reusable-session registry: a JSON map `{chunk_id: primed_session_id}` (default `~/.claude_code_cli_runner/reusable_sessions.json`, overridable via env / arg). Read/modify/atomic-replace under a lock. Backs prime-once/fork; never correctness-critical. |
+| `session_registry.py` | The optional on-disk reusable-session registry: a JSON map `{chunk_id: {"session_id", "source_jsonl"}}` (default `~/.claude_code_cli_runner/reusable_sessions.json`, overridable via env / arg; bare-string values read for back-compat). Read/modify/atomic-replace under a lock. Backs prime-once/fork; never correctness-critical. |
+| `claude_session_store.py` | Locates and relocates claude's session transcripts (`~/.claude/projects/<cwd-encoded>/<sid>.jsonl`, `/`+`_`->`-`). `encode_cwd_to_project_dirname`, `project_dir_for_cwd`, `session_jsonl_path`, `ensure_session_present_in_cwd` (copy a primed jsonl into a task cwd's project dir so `--resume` finds it). Projects root overridable via `CLAUDE_PROJECTS_ROOT` / `projects_root=`. Enables cross-cwd fork-reuse. |
 | `result.py` | The `RunResult` dataclass + `to_dict()`. Multimodal-aware: assistant text **and** produced artifacts, plus exit/status and the live-log path. |
 | `live_files.py` | The on-disk live-window contract: the three file names, the run-state values, the four control intents, and the read/write helpers around them. The load-bearing names live here in one place so every face agrees. |
 | `__main__.py` | The CLI face: `run` / `serve` / `control` subcommands. Builds a `RunRequest` from argv and drives the same core. Also the `claude-code-cli-runner` console script. |
@@ -103,7 +104,14 @@ reusable_context present AND enable_session_reuse?
               # SIMPLE self-completing prime: claude --session-id <sid> -p "<chunk text>"
               # NO stdin (stdin=DEVNULL), default output (not parsed), success = exit 0.
               _run_priming_session(build_priming_claude_argv(req, primed_sid, chunk_text))
-              registry.record(chunk_id -> primed_sid)   # only on exit 0
+              # the prime (run in the task workspace) leaves a jsonl under that
+              # cwd's claude-projects dir; record its abs path alongside the sid
+              source_jsonl = session_jsonl_path(prime_cwd, primed_sid)
+              registry.record(chunk_id -> {session_id, source_jsonl})   # only on exit 0
+          # cross-cwd: --resume only finds the session if its jsonl is under the
+          # TASK cwd's project dir, so relocate (copy) it there first (no-op if
+          # task cwd == prime cwd); missing source jsonl -> raise -> inline
+          ensure_session_present_in_cwd(primed_sid, source_jsonl, task_cwd)
           task_sid = "task-<chunk_id>-<rand>"
           _stream_one_run(argv  = build_fork_claude_argv(req, primed_sid, task_sid),
                           input = task input ONLY)            # chunk NOT re-sent
@@ -120,6 +128,20 @@ run) nothing drains its output; only the forked **task** run streams, writes the
 live-window files, and produces the `RunResult` — exactly as a normal run does.
 Because reuse is wrapped in a catch-all that falls back to the inline-prepend
 path, a disabled, absent, non-text, or failing reuse never fails the task.
+
+**Cross-cwd reuse via session-jsonl relocation.** claude persists each session at
+`~/.claude/projects/<cwd-encoded>/<session-id>.jsonl`, where `<cwd-encoded>` is
+the absolute cwd with every `/` **and** `_` mapped to `-` (`/tmp/ccrA` ->
+`-tmp-ccrA`). `--resume` only finds a session whose jsonl exists under the
+**current** cwd's project dir, so a session primed in one workspace cannot be
+forked from another without help. `claude_session_store.py` provides that help:
+`encode_cwd_to_project_dirname`, `project_dir_for_cwd`, `session_jsonl_path`, and
+`ensure_session_present_in_cwd` (copies the primed jsonl into the target cwd's
+project dir, no-op if already there, raises if the source is missing). The
+runner records the prime's jsonl path in the registry and, before each fork,
+copies it into the task cwd's project dir. The projects root defaults to
+`~/.claude/projects`, overridable via the `CLAUDE_PROJECTS_ROOT` env var or the
+`projects_root=` arg (tests use a tmp dir; the stub simulates the jsonl write).
 
 ## Streaming + control-channel model
 

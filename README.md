@@ -197,17 +197,36 @@ Wire shape (`POST /run` JSON), same block types as `input_content`:
    way; a chunk containing image/document blocks cannot be carried as a `-p`
    positional prompt, so it is **not** primed and the run falls back to inline
    (multimodal chunk priming is a deferred enhancement).
-2. **Forks per task**: it runs the task as
+2. **Forks per task** (cross-cwd capable): it runs the task as
    `claude --resume <primed_sid> --fork-session --session-id <fresh_task_sid> -p`,
    sending ONLY the per-task `input_content` over stdin. The chunk is already in
    the primed session, so its tokens are cache-reused and **not re-sent**. The
    primed session is untouched and reusable; later tasks with the same
    `chunk_id` skip priming and fork directly.
 
-**Registry.** A tiny JSON map `{chunk_id: primed_session_id}` at
+**Cross-cwd reuse via session-jsonl relocation.** claude stores each session at
+`~/.claude/projects/<cwd-encoded>/<session-id>.jsonl`, where `<cwd-encoded>` is
+the absolute cwd with every `/` **and** `_` replaced by `-` (e.g. `/tmp/ccrA` ->
+`-tmp-ccrA`). `--resume <sid> --fork-session` only finds a session whose jsonl
+lives under the **current** cwd's project dir. So per-task workspaces would each
+fail to fork a session primed in a different cwd. The runner closes that gap: on
+prime it records both the primed `session_id` **and** the absolute path of the
+jsonl it created (under the prime cwd's project dir); before each fork it
+**copies** that jsonl into the **task cwd's** project dir (a no-op when the task
+cwd equals the prime cwd) so `--resume` finds it, then forks. The
+`claude_session_store.py` helpers (`encode_cwd_to_project_dirname`,
+`project_dir_for_cwd`, `session_jsonl_path`, `ensure_session_present_in_cwd`)
+implement this; the projects root defaults to `~/.claude/projects` and is
+overridable via the `CLAUDE_PROJECTS_ROOT` env var or the `projects_root=`
+argument to `run_claude_code_task` (tests point it at a tmp dir).
+
+**Registry.** A tiny JSON map
+`{chunk_id: {"session_id": <psid>, "source_jsonl": <abs jsonl path>}}` at
 `~/.claude_code_cli_runner/reusable_sessions.json` (override via the
 `CLAUDE_CODE_CLI_RUNNER_REGISTRY_PATH` env var, or the `registry_path=` argument
-to `run_claude_code_task`). Writes are an atomic same-dir replace under a lock.
+to `run_claude_code_task`). Older bare-string `{chunk_id: primed_session_id}`
+entries are still read for back-compat. Writes are an atomic same-dir replace
+under a lock.
 
 **Inline fallback — always correct, never optional for correctness.** Reuse is
 purely an optimization. The chunk is instead **prepended inline** to
@@ -217,6 +236,7 @@ purely an optimization. The chunk is instead **prepended inline** to
 - no `reusable_context` is supplied, OR
 - the chunk is **not text-only** (contains image/document blocks), OR
 - priming/forking raises or errors (e.g. the prime exits non-zero or times out,
+  the primed session jsonl is missing so it cannot be relocated, the copy fails,
   or claude rejects `--resume`).
 
 On a reuse failure the task still completes via the inline path, a

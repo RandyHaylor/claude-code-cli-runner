@@ -6,9 +6,12 @@ that chunk and records the resulting (caller-chosen) session id here; subsequent
 tasks carrying the same ``chunk_id`` skip priming and fork directly from the
 recorded session.
 
-Format: a single JSON object file ``{chunk_id: primed_session_id, ...}``. The
-default location is ``~/.claude_code_cli_runner/reusable_sessions.json``; the
-path is fully overridable (tests point it at a tmp dir).
+Format: a single JSON object file mapping each chunk_id to a small record
+``{"session_id": <psid>, "source_jsonl": <abs path of the primed jsonl>}``. For
+back-compat, a bare-string value (an older ``{chunk_id: primed_session_id}``
+file) is still read as a session id with no recorded source jsonl. The default
+location is ``~/.claude_code_cli_runner/reusable_sessions.json``; the path is
+fully overridable (tests point it at a tmp dir).
 
 Concurrency: writes use a same-directory atomic replace under a process-wide
 lock, which is sufficient for this best-effort, single-host use. Reuse is never
@@ -48,29 +51,64 @@ def _read_all(registry_path: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _coerce_record(value) -> "dict | None":
+    """Normalise a stored value to ``{"session_id", "source_jsonl"}`` or None.
+
+    Back-compat: a bare non-empty string is an older session-id-only entry.
+    """
+    if isinstance(value, str) and value:
+        return {"session_id": value, "source_jsonl": None}
+    if isinstance(value, dict):
+        sid = value.get("session_id")
+        if isinstance(sid, str) and sid:
+            source = value.get("source_jsonl")
+            return {
+                "session_id": sid,
+                "source_jsonl": source if isinstance(source, str) and source else None,
+            }
+    return None
+
+
 def get_primed_session_id(chunk_id: str, registry_path: "str | None" = None) -> "str | None":
     """Return the recorded primed session id for ``chunk_id``, or None."""
+    record = get_primed_record(chunk_id, registry_path=registry_path)
+    return record["session_id"] if record else None
+
+
+def get_primed_record(chunk_id: str, registry_path: "str | None" = None) -> "dict | None":
+    """Return ``{"session_id", "source_jsonl"}`` for ``chunk_id``, or None."""
     registry_path = registry_path or default_registry_path()
     with _LOCK:
         value = _read_all(registry_path).get(chunk_id)
-    return value if isinstance(value, str) and value else None
+    return _coerce_record(value)
+
+
+def _write_all(registry_path: str, data: dict) -> None:
+    os.makedirs(os.path.dirname(registry_path) or ".", exist_ok=True)
+    tmp_path = registry_path + ".tmp.%d" % os.getpid()
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, registry_path)
 
 
 def record_primed_session_id(
-    chunk_id: str, primed_session_id: str, registry_path: "str | None" = None
+    chunk_id: str,
+    primed_session_id: str,
+    registry_path: "str | None" = None,
+    *,
+    source_jsonl: "str | None" = None,
 ) -> None:
-    """Record ``chunk_id -> primed_session_id`` via read/modify/atomic-replace."""
+    """Record ``chunk_id -> {session_id, source_jsonl}`` via atomic replace."""
     registry_path = registry_path or default_registry_path()
     with _LOCK:
-        os.makedirs(os.path.dirname(registry_path) or ".", exist_ok=True)
         data = _read_all(registry_path)
-        data[chunk_id] = primed_session_id
-        tmp_path = registry_path + ".tmp.%d" % os.getpid()
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, registry_path)
+        data[chunk_id] = {
+            "session_id": primed_session_id,
+            "source_jsonl": source_jsonl,
+        }
+        _write_all(registry_path, data)
 
 
 def forget_chunk(chunk_id: str, registry_path: "str | None" = None) -> None:

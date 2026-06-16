@@ -43,6 +43,7 @@ from .live_files import (
 from .request import RunRequest
 from .result import RunResult
 from . import session_registry
+from . import claude_session_store
 from .transports import (
     build_command_for,
     build_fork_claude_argv,
@@ -56,6 +57,7 @@ def run_claude_code_task(
     build_command=None,
     pause_poll_seconds: float = 0.02,
     registry_path=None,
+    projects_root=None,
 ) -> RunResult:
     """Run a streaming claude -p task and return a multimodal RunResult.
 
@@ -82,6 +84,7 @@ def run_claude_code_task(
             build_command=build_command,
             pause_poll_seconds=pause_poll_seconds,
             registry_path=registry_path,
+            projects_root=projects_root,
         )
 
     # No reuse: inline the chunk (if present) and run normally.
@@ -111,10 +114,19 @@ def _run_with_session_reuse(
     build_command,
     pause_poll_seconds: float,
     registry_path,
+    projects_root=None,
 ) -> RunResult:
-    """Prime-once / fork-per-task path, with inline fallback on any failure."""
+    """Prime-once / fork-per-task path, with inline fallback on any failure.
+
+    Cross-cwd reuse: the prime runs in the task's workspace and leaves a session
+    jsonl under that cwd's claude-projects dir; its path is recorded in the
+    registry. On a later fork whose task cwd differs from the prime cwd, the
+    primed jsonl is COPIED into the task cwd's project dir before forking, so
+    ``--resume`` finds it. Same-cwd is a no-op copy.
+    """
     reuse = run_request.reusable_context
     chunk_id = reuse.chunk_id
+    task_cwd = os.fspath(run_request.workspace_directory)
 
     def fall_back_inline(note: str) -> RunResult:
         return _stream_one_run(
@@ -126,9 +138,11 @@ def _run_with_session_reuse(
         )
 
     try:
-        primed_sid = session_registry.get_primed_session_id(
+        record = session_registry.get_primed_record(
             chunk_id, registry_path=registry_path
         )
+        primed_sid = record["session_id"] if record else None
+        source_jsonl = record["source_jsonl"] if record else None
         notes = []
         if primed_sid is None:
             # PRIME ONCE: run a SIMPLE completing claude that ingests ONLY the
@@ -146,8 +160,18 @@ def _run_with_session_reuse(
             primed_sid = str(uuid.uuid4())
             prime_argv = build_priming_claude_argv(run_request, primed_sid, chunk_text)
             _run_priming_session(run_request, argv=prime_argv)
+            # The prime ran in the task workspace (prime_cwd == task_cwd here),
+            # so claude wrote its jsonl under that cwd's project dir. Record both
+            # the session id and the absolute jsonl path so later forks from a
+            # DIFFERENT cwd can relocate it.
+            source_jsonl = claude_session_store.session_jsonl_path(
+                task_cwd, primed_sid, projects_root=projects_root
+            )
             session_registry.record_primed_session_id(
-                chunk_id, primed_sid, registry_path=registry_path
+                chunk_id,
+                primed_sid,
+                registry_path=registry_path,
+                source_jsonl=source_jsonl,
             )
             notes.append(
                 "reusable_context %r primed new session %s" % (chunk_id, primed_sid)
@@ -156,6 +180,17 @@ def _run_with_session_reuse(
             notes.append(
                 "reusable_context %r reusing primed session %s" % (chunk_id, primed_sid)
             )
+
+        # Cross-cwd reuse: claude --resume only finds the primed session if its
+        # jsonl exists under the TASK cwd's project dir. Relocate it there first
+        # (same-cwd is a no-op). A missing source jsonl raises -> inline fallback.
+        if not source_jsonl:
+            raise RuntimeError(
+                "no source jsonl recorded for primed session %s" % primed_sid
+            )
+        claude_session_store.ensure_session_present_in_cwd(
+            primed_sid, source_jsonl, task_cwd, projects_root=projects_root
+        )
 
         # TASK as a FORK of the primed session: send ONLY the per-task remainder
         # (the chunk is already in the primed session, NOT re-sent here).

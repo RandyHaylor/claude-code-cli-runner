@@ -45,6 +45,7 @@ def _read_log(path):
 
 def test_first_run_primes_and_task_forks(tmp_path, monkeypatch):
     registry = str(tmp_path / "reg.json")
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", str(tmp_path / "projects"))
     captured = _capture_popen(monkeypatch)
 
     request = RunRequest(
@@ -100,6 +101,7 @@ def test_first_run_primes_and_task_forks(tmp_path, monkeypatch):
 
 def test_second_run_same_chunk_does_not_reprime(tmp_path, monkeypatch):
     registry = str(tmp_path / "reg.json")
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", str(tmp_path / "projects"))
 
     base = dict(
         workspace_directory=str(tmp_path / "ws"),
@@ -255,3 +257,175 @@ def test_no_reusable_context_behaves_as_before(tmp_path):
     log = _read_log(result.live_log_path)
     assert "plain task" in log
     assert "runner_note" not in log
+
+
+# --- claude_session_store helpers -----------------------------------------
+
+from claude_code_cli_runner import claude_session_store as store
+
+
+def test_encode_cwd_replaces_slash_and_underscore():
+    assert store.encode_cwd_to_project_dirname("/tmp/ccrA") == "-tmp-ccrA"
+    assert store.encode_cwd_to_project_dirname("/home/aikenyon/x_y") == "-home-aikenyon-x-y"
+
+
+def test_project_dir_and_jsonl_path_use_override(tmp_path):
+    root = str(tmp_path / "projects")
+    pdir = store.project_dir_for_cwd("/tmp/ccrA", projects_root=root)
+    assert pdir == os.path.join(root, "-tmp-ccrA")
+    jp = store.session_jsonl_path("/tmp/ccrA", "sid123", projects_root=root)
+    assert jp == os.path.join(root, "-tmp-ccrA", "sid123.jsonl")
+
+
+def test_ensure_session_present_copies_into_target_cwd(tmp_path):
+    root = str(tmp_path / "projects")
+    # source jsonl as if primed in cwd A
+    src = store.session_jsonl_path("/tmp/ccrA", "sid", projects_root=root)
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    with open(src, "w", encoding="utf-8") as h:
+        h.write("primed\n")
+    target = store.ensure_session_present_in_cwd("sid", src, "/tmp/ccrB", projects_root=root)
+    assert target == store.session_jsonl_path("/tmp/ccrB", "sid", projects_root=root)
+    assert os.path.isfile(target)
+    with open(target, encoding="utf-8") as h:
+        assert h.read() == "primed\n"
+
+
+def test_ensure_session_present_same_cwd_is_noop(tmp_path):
+    root = str(tmp_path / "projects")
+    src = store.session_jsonl_path("/tmp/ccrA", "sid", projects_root=root)
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    with open(src, "w", encoding="utf-8") as h:
+        h.write("x\n")
+    target = store.ensure_session_present_in_cwd("sid", src, "/tmp/ccrA", projects_root=root)
+    assert os.path.abspath(target) == os.path.abspath(src)
+
+
+def test_ensure_session_present_missing_source_raises(tmp_path):
+    root = str(tmp_path / "projects")
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        store.ensure_session_present_in_cwd(
+            "sid", str(tmp_path / "nope.jsonl"), "/tmp/ccrB", projects_root=root
+        )
+
+
+# --- cross-cwd reuse in the runner ----------------------------------------
+
+def test_registry_records_session_and_source_jsonl(tmp_path, monkeypatch):
+    registry = str(tmp_path / "reg.json")
+    projects = str(tmp_path / "projects")
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", projects)
+
+    prime_ws = str(tmp_path / "ws_prime")
+    run_claude_code_task(
+        RunRequest(
+            input_content=[TextBlock(text="task one")],
+            workspace_directory=prime_ws,
+            claude_command=STUB_AS_CLAUDE,
+            reusable_context=ReusableContext(
+                chunk_id="chunkX", content=[TextBlock(text="ctx")]
+            ),
+        ),
+        registry_path=registry,
+    )
+    record = session_registry.get_primed_record("chunkX", registry_path=registry)
+    assert record is not None
+    assert record["session_id"]
+    # source jsonl is the prime cwd's project-dir transcript, and it exists.
+    expected = store.session_jsonl_path(
+        prime_ws, record["session_id"], projects_root=projects
+    )
+    assert record["source_jsonl"] == expected
+    assert os.path.isfile(expected)
+
+
+def test_fork_in_different_cwd_relocates_jsonl_then_forks(tmp_path, monkeypatch):
+    registry = str(tmp_path / "reg.json")
+    projects = str(tmp_path / "projects")
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", projects)
+
+    prime_ws = str(tmp_path / "ws_prime")
+    task_ws = str(tmp_path / "ws_task")
+
+    # First run primes in prime_ws.
+    run_claude_code_task(
+        RunRequest(
+            input_content=[TextBlock(text="task one")],
+            workspace_directory=prime_ws,
+            claude_command=STUB_AS_CLAUDE,
+            reusable_context=ReusableContext(
+                chunk_id="chunkR", content=[TextBlock(text="ctx")]
+            ),
+        ),
+        registry_path=registry,
+    )
+    primed_sid = session_registry.get_primed_session_id("chunkR", registry_path=registry)
+    target_jsonl = store.session_jsonl_path(task_ws, primed_sid, projects_root=projects)
+    assert not os.path.isfile(target_jsonl)  # not yet present in task cwd
+
+    # Second run, SAME chunk, DIFFERENT cwd: must relocate then fork.
+    captured = _capture_popen(monkeypatch)
+    run_claude_code_task(
+        RunRequest(
+            input_content=[TextBlock(text="task two")],
+            workspace_directory=task_ws,
+            claude_command=STUB_AS_CLAUDE,
+            reusable_context=ReusableContext(
+                chunk_id="chunkR", content=[TextBlock(text="ctx")]
+            ),
+        ),
+        registry_path=registry,
+    )
+    # The jsonl was copied into the task cwd's project dir BEFORE the fork.
+    assert os.path.isfile(target_jsonl)
+    # Single Popen (only the fork, no re-prime) and its argv resumes the primed sid.
+    assert len(captured) == 1
+    task_argv = captured[0]
+    assert "--resume" in task_argv
+    assert task_argv[task_argv.index("--resume") + 1] == primed_sid
+    assert "--fork-session" in task_argv
+
+
+def test_missing_source_jsonl_falls_back_inline(tmp_path, monkeypatch):
+    registry = str(tmp_path / "reg.json")
+    projects = str(tmp_path / "projects")
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", projects)
+
+    # Pre-seed the registry with a primed session whose source jsonl does NOT
+    # exist -> the fork relocate raises -> inline fallback.
+    session_registry.record_primed_session_id(
+        "chunkM",
+        "11111111-1111-1111-1111-111111111111",
+        registry_path=registry,
+        source_jsonl=str(tmp_path / "gone.jsonl"),
+    )
+    captured = _capture_popen(monkeypatch)
+    result = run_claude_code_task(
+        RunRequest(
+            input_content=[TextBlock(text="task body")],
+            workspace_directory=str(tmp_path / "ws"),
+            claude_command=STUB_AS_CLAUDE,
+            reusable_context=ReusableContext(
+                chunk_id="chunkM", content=[TextBlock(text="leading chunk inline")]
+            ),
+        ),
+        registry_path=registry,
+    )
+    assert len(captured) == 1
+    assert "--resume" not in captured[0]
+    log = _read_log(result.live_log_path)
+    assert "falling back to inline" in log
+    assert "leading chunk inline" in log
+    assert "task body" in log
+    # The unusable chunk was forgotten.
+    assert session_registry.get_primed_session_id("chunkM", registry_path=registry) is None
+
+
+def test_registry_backcompat_bare_string_value(tmp_path):
+    registry = str(tmp_path / "reg.json")
+    with open(registry, "w", encoding="utf-8") as h:
+        json.dump({"oldChunk": "abc-123"}, h)
+    assert session_registry.get_primed_session_id("oldChunk", registry_path=registry) == "abc-123"
+    rec = session_registry.get_primed_record("oldChunk", registry_path=registry)
+    assert rec == {"session_id": "abc-123", "source_jsonl": None}

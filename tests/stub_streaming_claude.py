@@ -38,6 +38,22 @@ def emit(obj):
     sys.stdout.flush()
 
 
+def maybe_write_session_jsonl():
+    """Simulate claude's session store: when invoked with --session-id and a
+    CLAUDE_PROJECTS_ROOT is set (tests), write a transcript jsonl under the cwd's
+    encoded project dir, mirroring real claude's layout. Lets the prime leave a
+    forkable, relocatable session behind without the real CLI."""
+    root = os.environ.get("CLAUDE_PROJECTS_ROOT")
+    if not root or "--session-id" not in sys.argv:
+        return
+    session_id = sys.argv[sys.argv.index("--session-id") + 1]
+    encoded = os.getcwd().replace("/", "-").replace("_", "-")
+    project_dir = os.path.join(root, encoded)
+    os.makedirs(project_dir, exist_ok=True)
+    with open(os.path.join(project_dir, session_id + ".jsonl"), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "summary", "session_id": session_id}) + "\n")
+
+
 def stdin_echo_loop():
     for line in sys.stdin:
         line = line.strip()
@@ -51,6 +67,7 @@ def stdin_echo_loop():
 
 
 def main():
+    maybe_write_session_jsonl()
     threading.Thread(target=stdin_echo_loop, daemon=True).start()
 
     emit({"type": "system", "subtype": "init", "session_id": "stub-session"})
