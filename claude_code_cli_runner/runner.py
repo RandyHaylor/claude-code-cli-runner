@@ -141,7 +141,9 @@ def _run_with_session_reuse(
                     "simple priming unsupported (multimodal priming deferred)"
                     % chunk_id
                 )
-            primed_sid = "primed-%s-%s" % (chunk_id, uuid.uuid4().hex[:8])
+            # claude --session-id requires a valid UUID; the chunk_id<->session
+            # association lives in the registry + startup notes, not in the id.
+            primed_sid = str(uuid.uuid4())
             prime_argv = build_priming_claude_argv(run_request, primed_sid, chunk_text)
             _run_priming_session(run_request, argv=prime_argv)
             session_registry.record_primed_session_id(
@@ -157,7 +159,7 @@ def _run_with_session_reuse(
 
         # TASK as a FORK of the primed session: send ONLY the per-task remainder
         # (the chunk is already in the primed session, NOT re-sent here).
-        task_sid = "task-%s-%s" % (chunk_id, uuid.uuid4().hex[:8])
+        task_sid = str(uuid.uuid4())  # must be a valid UUID for claude --session-id
         fork_argv = build_fork_claude_argv(run_request, primed_sid, task_sid)
         return _stream_one_run(
             run_request,

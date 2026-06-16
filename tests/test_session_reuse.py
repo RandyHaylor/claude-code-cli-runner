@@ -60,7 +60,11 @@ def test_first_run_primes_and_task_forks(tmp_path, monkeypatch):
 
     # Registry now maps chunkA -> a primed session id.
     primed_sid = session_registry.get_primed_session_id("chunkA", registry_path=registry)
-    assert primed_sid and primed_sid.startswith("primed-chunkA-")
+    # claude --session-id requires a valid UUID; the chunk_id<->session link
+    # lives in the registry mapping, not in the id string.
+    assert primed_sid
+    import uuid as _uuid
+    _uuid.UUID(primed_sid)  # raises if not a valid UUID
 
     # Two Popens: [0] prime (SIMPLE completing call), [1] task (fork).
     assert len(captured) == 2
@@ -83,7 +87,8 @@ def test_first_run_primes_and_task_forks(tmp_path, monkeypatch):
     assert "--fork-session" in task_argv
     assert "--session-id" in task_argv
     fresh_sid = task_argv[task_argv.index("--session-id") + 1]
-    assert fresh_sid.startswith("task-chunkA-")
+    _uuid.UUID(fresh_sid)  # the task sid is a fresh valid UUID
+    assert fresh_sid != primed_sid
 
     # The chunk text is NOT re-sent in the task run (it lives in the primed
     # session); the task user message carries only the per-task remainder.
