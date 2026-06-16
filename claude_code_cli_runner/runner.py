@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 
 from .content import (
     build_injected_user_message,
@@ -40,7 +41,12 @@ from .live_files import (
 )
 from .request import RunRequest
 from .result import RunResult
-from .transports import build_command_for
+from . import session_registry
+from .transports import (
+    build_command_for,
+    build_fork_claude_argv,
+    build_priming_claude_argv,
+)
 
 
 def run_claude_code_task(
@@ -48,16 +54,177 @@ def run_claude_code_task(
     *,
     build_command=None,
     pause_poll_seconds: float = 0.02,
+    registry_path=None,
 ) -> RunResult:
     """Run a streaming claude -p task and return a multimodal RunResult.
 
     ``build_command(run_request) -> argv`` is injectable (tests pass a stub-
     pointing builder); by default the transport for the request's
     execution_location is used.
+
+    OPTIONAL session reuse: if the request carries a ``reusable_context`` AND
+    ``enable_session_reuse`` is True, the leading chunk is primed ONCE (keyed by
+    its ``chunk_id`` in the on-disk registry) and the task is run as a FORK of
+    that primed session, so the chunk's tokens are cache-reused instead of
+    re-sent. This is ALWAYS best-effort: when reuse is disabled, absent, or
+    anything fails, the chunk is PREPENDED inline to ``input_content`` and the
+    task runs normally (always correct). A note is appended to the live log on
+    any fallback.
     """
     if build_command is None:
         build_command = build_command_for
 
+    reuse = run_request.reusable_context
+    if reuse is not None and run_request.enable_session_reuse:
+        return _run_with_session_reuse(
+            run_request,
+            build_command=build_command,
+            pause_poll_seconds=pause_poll_seconds,
+            registry_path=registry_path,
+        )
+
+    # No reuse: inline the chunk (if present) and run normally.
+    effective_input = _inline_input_content(run_request)
+    return _stream_one_run(
+        run_request,
+        argv=build_command(run_request),
+        input_content=effective_input,
+        pause_poll_seconds=pause_poll_seconds,
+        startup_notes=None,
+    )
+
+
+def _inline_input_content(run_request: RunRequest) -> list:
+    """The input content actually sent: when a reusable context is present but
+    NOT being reused (disabled / fallback), its blocks are PREPENDED to the
+    task's input_content (chunk first). Otherwise just the task input."""
+    reuse = run_request.reusable_context
+    if reuse is None:
+        return list(run_request.input_content)
+    return list(reuse.content) + list(run_request.input_content)
+
+
+def _run_with_session_reuse(
+    run_request: RunRequest,
+    *,
+    build_command,
+    pause_poll_seconds: float,
+    registry_path,
+) -> RunResult:
+    """Prime-once / fork-per-task path, with inline fallback on any failure."""
+    reuse = run_request.reusable_context
+    chunk_id = reuse.chunk_id
+
+    def fall_back_inline(note: str) -> RunResult:
+        return _stream_one_run(
+            run_request,
+            argv=build_command(run_request),
+            input_content=_inline_input_content(run_request),
+            pause_poll_seconds=pause_poll_seconds,
+            startup_notes=[note],
+        )
+
+    try:
+        primed_sid = session_registry.get_primed_session_id(
+            chunk_id, registry_path=registry_path
+        )
+        notes = []
+        if primed_sid is None:
+            # PRIME ONCE: run a session that ingests ONLY the chunk, record its id.
+            primed_sid = "primed-%s-%s" % (chunk_id, uuid.uuid4().hex[:8])
+            prime_argv = build_priming_claude_argv(run_request, primed_sid)
+            _run_priming_session(
+                run_request, argv=prime_argv, chunk_content=list(reuse.content)
+            )
+            session_registry.record_primed_session_id(
+                chunk_id, primed_sid, registry_path=registry_path
+            )
+            notes.append(
+                "reusable_context %r primed new session %s" % (chunk_id, primed_sid)
+            )
+        else:
+            notes.append(
+                "reusable_context %r reusing primed session %s" % (chunk_id, primed_sid)
+            )
+
+        # TASK as a FORK of the primed session: send ONLY the per-task remainder
+        # (the chunk is already in the primed session, NOT re-sent here).
+        task_sid = "task-%s-%s" % (chunk_id, uuid.uuid4().hex[:8])
+        fork_argv = build_fork_claude_argv(run_request, primed_sid, task_sid)
+        return _stream_one_run(
+            run_request,
+            argv=fork_argv,
+            input_content=list(run_request.input_content),
+            pause_poll_seconds=pause_poll_seconds,
+            startup_notes=notes,
+        )
+    except Exception as cause:  # noqa: BLE001 - reuse must NEVER fail the task
+        # Best-effort: a stale/unusable session id should not be reused again.
+        try:
+            session_registry.forget_chunk(chunk_id, registry_path=registry_path)
+        except Exception:  # noqa: BLE001
+            pass
+        return fall_back_inline(
+            "session reuse for chunk %r failed (%s); falling back to inline chunk"
+            % (chunk_id, cause)
+        )
+
+
+def _run_priming_session(run_request: RunRequest, *, argv, chunk_content) -> None:
+    """Run a brief claude session that ingests the chunk, then ends. Not part of
+    the live window — its only purpose is to leave a reusable primed session
+    behind. Raises on a non-zero/failed invocation so the caller can fall back."""
+    workspace_directory = os.fspath(run_request.workspace_directory)
+    os.makedirs(workspace_directory, exist_ok=True)
+    process = subprocess.Popen(
+        argv,
+        cwd=workspace_directory,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        if process.stdin is not None:
+            process.stdin.write(json.dumps(build_user_message(chunk_content)) + "\n")
+            process.stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        pass
+    # Drain stdout until the session ends (result event) or the process exits.
+    saw_result = False
+    if process.stdout is not None:
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(chunk, dict) and chunk.get("type") == "result":
+                saw_result = True
+                break
+    _terminate_process(process)
+    exit_code = process.poll()
+    if not saw_result and exit_code not in (0, None):
+        raise RuntimeError(
+            "priming claude exited %r without a result event" % exit_code
+        )
+
+
+def _stream_one_run(
+    run_request: RunRequest,
+    *,
+    argv,
+    input_content,
+    pause_poll_seconds: float,
+    startup_notes,
+) -> RunResult:
+    """The single, always-streaming execution core: launch ``argv``, deliver
+    ``input_content`` over stdin, honour the control channel, write the live
+    window, and return a RunResult. ``startup_notes`` (if any) are appended to
+    the live log as ``runner_note`` records before streaming begins."""
     workspace_directory = os.fspath(run_request.workspace_directory)
     os.makedirs(workspace_directory, exist_ok=True)
 
@@ -72,9 +239,16 @@ def run_claude_code_task(
 
     # Start clean so a tailer's offsets are meaningful.
     open(log_path, "w", encoding="utf-8").close()
+    if startup_notes:
+        with open(log_path, "a", encoding="utf-8") as note_handle:
+            for note in startup_notes:
+                note_handle.write(
+                    json.dumps({"received_at": time.time(), "runner_note": note}) + "\n"
+                )
+            note_handle.flush()
+            os.fsync(note_handle.fileno())
     _reflect(status_path, RUN_STATE_RUNNING)
 
-    argv = build_command(run_request)
     process = subprocess.Popen(
         argv,
         cwd=workspace_directory,
@@ -96,7 +270,7 @@ def run_claude_code_task(
 
     # Deliver the multimodal prompt as a stdin stream-json user message. stdin
     # stays OPEN afterwards so mid-run send_command injection still works.
-    write_stream_json_message(build_user_message(run_request.input_content))
+    write_stream_json_message(build_user_message(input_content))
 
     consumed_control_lines = 0
     paused = False

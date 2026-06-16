@@ -16,3 +16,10 @@ def stub_build_command(run_request):
     wraps it in a fake `ssh` shape so the SAME stub serves both transports (the
     real transport selection is tested separately in test_transports)."""
     return [sys.executable, STUB_PATH]
+
+
+# The stub is executable with a python shebang and IGNORES all CLI flags, so a
+# request whose ``claude_command`` points at it runs the stub for ANY argv —
+# including the reuse path's transport-built prime/fork argv. Reuse tests set
+# ``claude_command=STUB_AS_CLAUDE`` to exercise the real transport argv.
+STUB_AS_CLAUDE = STUB_PATH

@@ -146,6 +146,74 @@ Entry points: `build_streaming_http_server`, `run_streaming_http_server`,
 | `claude_command` | executable name/path (default `"claude"`; tests use a stub) |
 | `live_log_path` / `control_channel_path` / `run_status_path` | optional explicit paths; default to the contract names under the workspace |
 | `timeout_seconds` | optional overall wall-clock budget |
+| `reusable_context` | optional leading `ReusableContext(chunk_id, content=[blocks])` — see below |
+| `enable_session_reuse` | best-effort opt-out (default `True`); `False` always inlines the chunk |
+
+### Optional reusable context (prime-once / fork-per-task) — best-effort
+
+A caller MAY mark a **leading** context chunk as repeatable by attaching a
+`ReusableContext` with a stable, unique `chunk_id` and its own list of content
+blocks (same block types as `input_content`):
+
+```python
+from claude_code_cli_runner import ReusableContext, RunRequest, TextBlock
+
+RunRequest(
+    input_content=[TextBlock(text="...the per-task remainder...")],
+    workspace_directory="/work/run-1",
+    reusable_context=ReusableContext(
+        chunk_id="house-style-v3",
+        content=[TextBlock(text="...a big leading context shared by many tasks...")],
+    ),
+    enable_session_reuse=True,   # default
+)
+```
+
+Wire shape (`POST /run` JSON), same block types as `input_content`:
+
+```jsonc
+{
+  "input_content": [ {"block_type": "text", "text": "the per-task remainder"} ],
+  "workspace_directory": "/work/run-1",
+  "reusable_context": {
+    "chunk_id": "house-style-v3",
+    "content": [ {"block_type": "text", "text": "big leading context"} ]
+  },
+  "enable_session_reuse": true
+}
+```
+
+**Prime-once / fork model.** When a `reusable_context` is present AND
+`enable_session_reuse` is `True`, the runner:
+
+1. **Primes once** per `chunk_id`: if the id is not yet registered, it runs a
+   throwaway `claude --session-id <new_primed_sid> -p` priming session that
+   ingests ONLY the chunk over stdin, then records `chunk_id -> primed_sid` in
+   the on-disk registry.
+2. **Forks per task**: it runs the task as
+   `claude --resume <primed_sid> --fork-session --session-id <fresh_task_sid> -p`,
+   sending ONLY the per-task `input_content` over stdin. The chunk is already in
+   the primed session, so its tokens are cache-reused and **not re-sent**. The
+   primed session is untouched and reusable; later tasks with the same
+   `chunk_id` skip priming and fork directly.
+
+**Registry.** A tiny JSON map `{chunk_id: primed_session_id}` at
+`~/.claude_code_cli_runner/reusable_sessions.json` (override via the
+`CLAUDE_CODE_CLI_RUNNER_REGISTRY_PATH` env var, or the `registry_path=` argument
+to `run_claude_code_task`). Writes are an atomic same-dir replace under a lock.
+
+**Inline fallback — always correct, never optional for correctness.** Reuse is
+purely an optimization. The chunk is instead **prepended inline** to
+`input_content` (chunk blocks first, then the task blocks) whenever:
+
+- `enable_session_reuse` is `False`, OR
+- no `reusable_context` is supplied, OR
+- priming/forking raises or errors (e.g. claude rejects `--resume`).
+
+On a reuse failure the task still completes via the inline path, a
+`{"runner_note": ...}` record is written to the live log, and the unusable
+`chunk_id` is dropped from the registry so it is re-primed next time.
+Correctness never depends on reuse succeeding.
 
 ### Multimodal input — content block shapes
 

@@ -46,6 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .request import (
     DocumentBlock,
     ImageBlock,
+    ReusableContext,
     RunRequest,
     SshConfig,
     TextBlock,
@@ -67,18 +68,31 @@ _BLOCK_BUILDERS = {
 }
 
 
-def request_from_json(payload: dict) -> RunRequest:
-    """Build a RunRequest from the JSON wire shape."""
-    input_content = []
-    for block in payload.get("input_content", []):
+def _blocks_from_json(blocks) -> list:
+    built = []
+    for block in blocks or []:
         builder = _BLOCK_BUILDERS.get(block.get("block_type") or block.get("type"))
         if builder is None:
             raise ValueError("unknown content block: %r" % block)
-        input_content.append(builder(block))
+        built.append(builder(block))
+    return built
+
+
+def request_from_json(payload: dict) -> RunRequest:
+    """Build a RunRequest from the JSON wire shape."""
+    input_content = _blocks_from_json(payload.get("input_content", []))
 
     ssh = None
     if payload.get("ssh"):
         ssh = SshConfig(**payload["ssh"])
+
+    reusable_context = None
+    rc = payload.get("reusable_context")
+    if rc:
+        reusable_context = ReusableContext(
+            chunk_id=rc["chunk_id"],
+            content=_blocks_from_json(rc.get("content", [])),
+        )
 
     return RunRequest(
         input_content=input_content,
@@ -90,6 +104,8 @@ def request_from_json(payload: dict) -> RunRequest:
         extra_cli_flags=payload.get("extra_cli_flags", []),
         claude_command=payload.get("claude_command", "claude"),
         timeout_seconds=payload.get("timeout_seconds"),
+        reusable_context=reusable_context,
+        enable_session_reuse=payload.get("enable_session_reuse", True),
     )
 
 

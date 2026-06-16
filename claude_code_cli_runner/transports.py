@@ -46,6 +46,41 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
     return argv
 
 
+def build_priming_claude_argv(run_request: RunRequest, primed_session_id: str) -> "list[str]":
+    """Argv for a PRIMING run: a normal streaming claude that creates a NEW
+    session with a caller-chosen id (``--session-id``). The reusable context
+    chunk is delivered over stdin as the user message; the resulting session is
+    recorded so later tasks can fork from it.
+
+    Same verified base argv as a normal run, plus a plain ``--session-id`` so
+    the session has a stable, reusable id.
+    """
+    argv = build_base_claude_argv(run_request)
+    argv += ["--session-id", primed_session_id]
+    return argv
+
+
+def build_fork_claude_argv(
+    run_request: RunRequest, primed_session_id: str, task_session_id: str
+) -> "list[str]":
+    """Argv for a TASK run that FORKS from an already-primed session.
+
+    ``claude --resume <primed> --fork-session --session-id <fresh>`` creates a
+    new session that inherits the primed session's history (the chunk is already
+    in it); the primed session is untouched and reusable. The per-task remainder
+    (``input_content``) is delivered over stdin as usual.
+    """
+    argv = build_base_claude_argv(run_request)
+    argv += [
+        "--resume",
+        primed_session_id,
+        "--fork-session",
+        "--session-id",
+        task_session_id,
+    ]
+    return argv
+
+
 def resolve_ssh_host(ssh_config) -> str:
     """Resolve the SSH host: an explicit host wins; otherwise look the VM up by
     name via libvirt DHCP leases. This is the single real-infra seam — tests

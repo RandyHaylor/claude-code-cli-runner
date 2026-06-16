@@ -54,6 +54,23 @@ def test_ssh_host_resolved_from_vm_name_seam(monkeypatch):
     assert "agent-user@192.168.122.99" in argv
 
 
+def test_priming_argv_has_plain_session_id_no_resume():
+    request = RunRequest(input_content=[], workspace_directory="/tmp/ws")
+    argv = transports.build_priming_claude_argv(request, "primed-xyz")
+    assert "--session-id" in argv
+    assert argv[argv.index("--session-id") + 1] == "primed-xyz"
+    assert "--resume" not in argv
+    assert "--fork-session" not in argv
+
+
+def test_fork_argv_resumes_primed_and_forks_to_fresh():
+    request = RunRequest(input_content=[], workspace_directory="/tmp/ws")
+    argv = transports.build_fork_claude_argv(request, "primed-xyz", "task-abc")
+    assert argv[argv.index("--resume") + 1] == "primed-xyz"
+    assert "--fork-session" in argv
+    assert argv[argv.index("--session-id") + 1] == "task-abc"
+
+
 def test_model_flag_threaded_into_both_transports():
     local = transports.build_command_for(
         RunRequest(input_content=[], workspace_directory="/tmp/ws", model="some-model")

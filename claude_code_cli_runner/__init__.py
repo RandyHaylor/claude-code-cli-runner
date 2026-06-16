@@ -31,6 +31,7 @@ from .live_files import (
 from .request import (
     DocumentBlock,
     ImageBlock,
+    ReusableContext,
     RunRequest,
     TextBlock,
 )
@@ -40,6 +41,7 @@ from .runner import run_claude_code_task
 __all__ = [
     "run_claude_code_task",
     "RunRequest",
+    "ReusableContext",
     "RunResult",
     "TextBlock",
     "ImageBlock",

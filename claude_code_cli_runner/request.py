@@ -64,6 +64,28 @@ class DocumentBlock:
 ContentBlock = Union[TextBlock, ImageBlock, DocumentBlock]
 
 
+# --- optional reusable (prime-once / fork-per-task) leading context ----------
+
+
+@dataclass
+class ReusableContext:
+    """An OPTIONAL leading context chunk a caller marks as repeatable.
+
+    ``chunk_id`` is a stable, caller-chosen unique id for this exact leading
+    context. ``content`` is a LIST of the SAME content block types as
+    ``RunRequest.input_content``.
+
+    When a RunRequest carries this AND session reuse is enabled, the runner MAY
+    prime a claude session with this chunk ONCE (keyed by ``chunk_id``) and then
+    FORK per task so the chunk's tokens are cache-reused rather than re-sent.
+    This is ALWAYS best-effort: if reuse is disabled or anything fails, the
+    chunk is simply PREPENDED inline to ``input_content`` (always correct).
+    """
+
+    chunk_id: str
+    content: List[ContentBlock] = field(default_factory=list)
+
+
 # --- execution location config ----------------------------------------------
 
 LOCATION_LOCAL_SUBPROCESS = "local_subprocess"
@@ -114,6 +136,9 @@ class RunRequest:
       live_log_path / control_channel_path / run_status_path: optional explicit
         paths; default to the contract names under workspace_directory.
       timeout_seconds: optional overall wall-clock budget for the run.
+      reusable_context: optional leading ReusableContext (prime-once/fork model).
+      enable_session_reuse: best-effort opt-out — when False, the reusable
+        context (if any) is always PREPENDED inline; never primed/forked.
     """
 
     input_content: List[ContentBlock]
@@ -128,6 +153,8 @@ class RunRequest:
     control_channel_path: Optional[str] = None
     run_status_path: Optional[str] = None
     timeout_seconds: Optional[float] = None
+    reusable_context: Optional[ReusableContext] = None
+    enable_session_reuse: bool = True
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:

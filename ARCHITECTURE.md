@@ -25,8 +25,9 @@ and no queue/runner state machine. Those belong to a thin consumer-side adapter
 |---|---|
 | `request.py` | The `RunRequest` dataclass + the multimodal input content-block types (`TextBlock` / `ImageBlock` / `DocumentBlock`) + `SshConfig` and the `execution_location` constants. Pure data; validates `execution_location` in `__post_init__`. |
 | `content.py` | Serialize input content blocks into the stream-json user message `content` array; build the injected (`send_command`) user message; snapshot the workspace and diff it to list **produced artifacts** (multimodal out). |
-| `transports.py` | The transport seam: `build_command_for(request) -> argv`. The ONLY place `execution_location` branches. Local runs `claude` directly; `vm_over_ssh` / `remote_host` wrap the same claude argv in `ssh`. Holds the VM-name→IP DHCP resolution seam. |
-| `runner.py` | The single streaming execution core: launch the subprocess, deliver the prompt over stdin, append every chunk to the live log, honour the control channel, reflect run-state, and assemble the `RunResult`. |
+| `transports.py` | The transport seam: `build_command_for(request) -> argv`. The ONLY place `execution_location` branches. Local runs `claude` directly; `vm_over_ssh` / `remote_host` wrap the same claude argv in `ssh`. Holds the VM-name→IP DHCP resolution seam. Also builds the optional session-reuse argvs: `build_priming_claude_argv` (base + plain `--session-id`) and `build_fork_claude_argv` (base + `--resume <primed> --fork-session --session-id <fresh>`). |
+| `runner.py` | The single streaming execution core (`_stream_one_run`): launch the subprocess, deliver the prompt over stdin, append every chunk to the live log, honour the control channel, reflect run-state, and assemble the `RunResult`. Also the optional prime-once/fork-per-task orchestration (`_run_with_session_reuse`, `_run_priming_session`) with the always-correct inline fallback. |
+| `session_registry.py` | The optional on-disk reusable-session registry: a JSON map `{chunk_id: primed_session_id}` (default `~/.claude_code_cli_runner/reusable_sessions.json`, overridable via env / arg). Read/modify/atomic-replace under a lock. Backs prime-once/fork; never correctness-critical. |
 | `result.py` | The `RunResult` dataclass + `to_dict()`. Multimodal-aware: assistant text **and** produced artifacts, plus exit/status and the live-log path. |
 | `live_files.py` | The on-disk live-window contract: the three file names, the run-state values, the four control intents, and the read/write helpers around them. The load-bearing names live here in one place so every face agrees. |
 | `__main__.py` | The CLI face: `run` / `serve` / `control` subcommands. Builds a `RunRequest` from argv and drives the same core. Also the `claude-code-cli-runner` console script. |
@@ -81,6 +82,39 @@ wins; otherwise `ssh.vm_name` is resolved via libvirt DHCP leases
 is the single real-infrastructure dependency, and it is monkeypatched in tests.
 Both SSH locations share one builder; `remote_host` vs `vm_over_ssh` is purely a
 labelling distinction at the request level.
+
+## Optional reusable context (prime-once / fork-per-task)
+
+This is a **best-effort optimization layered on top of the same core** — never a
+new execution path for correctness. When a `RunRequest` carries a
+`reusable_context` (a leading chunk with a stable `chunk_id` + content blocks)
+AND `enable_session_reuse` is `True`, `run_claude_code_task` delegates to
+`_run_with_session_reuse`:
+
+```
+reusable_context present AND enable_session_reuse?
+   no  -> _stream_one_run(argv = build_command(request),
+                          input = chunk-prepended-inline-if-any + task)   # always correct
+   yes -> primed_sid = registry.get(chunk_id)
+          if missing:
+              primed_sid = "primed-<chunk_id>-<rand>"
+              _run_priming_session(build_priming_claude_argv(req, primed_sid),
+                                   stdin = chunk ONLY)        # ingest chunk once
+              registry.record(chunk_id -> primed_sid)
+          task_sid = "task-<chunk_id>-<rand>"
+          _stream_one_run(argv  = build_fork_claude_argv(req, primed_sid, task_sid),
+                          input = task input ONLY)            # chunk NOT re-sent
+          # ANY exception above -> registry.forget(chunk_id) + fall back inline,
+          #   writing a {"runner_note": ...} record to the live log.
+```
+
+The chunk is therefore sent to claude exactly **once** (the prime); every later
+task with the same `chunk_id` skips priming and forks straight off the recorded
+primed session, so the chunk's tokens are cache-reused. The priming run is a
+throwaway (it is not part of the live window); only the forked **task** run
+streams, writes the live-window files, and produces the `RunResult` — exactly as
+a normal run does. Because reuse is wrapped in a catch-all that falls back to the
+inline-prepend path, a disabled, absent, or failing reuse never fails the task.
 
 ## Streaming + control-channel model
 
