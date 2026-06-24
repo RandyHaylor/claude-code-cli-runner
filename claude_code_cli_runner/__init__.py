@@ -37,9 +37,12 @@ from .request import (
 )
 from .result import RunResult
 from .runner import run_claude_code_task
+from .auth_status import check_claude_auth_status, CLAUDE_AUTH_STATUS_COMMAND
 
 __all__ = [
     "run_claude_code_task",
+    "check_claude_auth_status",
+    "CLAUDE_AUTH_STATUS_COMMAND",
     "RunRequest",
     "ReusableContext",
     "RunResult",

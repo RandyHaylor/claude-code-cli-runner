@@ -53,6 +53,7 @@ from .request import (
 )
 from .live_files import append_control_intent
 from .runner import run_claude_code_task
+from .auth_status import check_claude_auth_status
 
 _BLOCK_BUILDERS = {
     "text": lambda d: TextBlock(text=d.get("text", "")),
@@ -130,6 +131,22 @@ def build_streaming_http_server(
             self.wfile.write(body)
 
         def do_GET(self):
+            # Pre-flight harness login check (raw-515): run `claude auth status
+            # --json` LOCALLY on this runner and return the normalized result, so
+            # a caller can detect a needs-login state without dispatching a task
+            # that would 401. Token-gated like /run (it reveals account info).
+            if self.path == "/auth-status":
+                if not self._token_ok():
+                    self._error(401, "missing or invalid access token")
+                    return
+                status = check_claude_auth_status()
+                body = json.dumps(status).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self._error(404, "not found")
 
         def _read_json_body(self):
@@ -342,6 +359,20 @@ def post_control(
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
+    )
+    if access_token:
+        request.add_header("X-Access-Token", access_token)
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_auth_status(server_url: str, access_token: "str | None" = None) -> dict:
+    """Client: GET ``/auth-status`` from a runner serve face and return the
+    normalized harness login status (see ``auth_status.check_claude_auth_status``).
+    Reports the login state of THAT runner's local ``claude`` credentials."""
+    request = urllib.request.Request(
+        server_url.rstrip("/") + "/auth-status",
+        method="GET",
     )
     if access_token:
         request.add_header("X-Access-Token", access_token)
