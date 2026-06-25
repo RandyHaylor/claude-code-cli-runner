@@ -85,3 +85,32 @@ def test_model_flag_threaded_into_both_transports():
         RunRequest(input_content=[], workspace_directory="/tmp/ws", model="some-model")
     )
     assert "--model" in local and "some-model" in local
+
+
+def test_permission_mode_adds_flag_and_omits_skip_permissions():
+    # raw-538: an explicit permission posture launches the run at
+    # --permission-mode <mode> and WITHOUT --dangerously-skip-permissions, even
+    # when skip was also requested (the explicit posture wins).
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            dangerously_skip_permissions=True,
+            permission_mode="acceptEdits",
+        )
+    )
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--dangerously-skip-permissions" not in argv
+
+
+def test_no_permission_mode_keeps_skip_permissions_path():
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            dangerously_skip_permissions=True,
+        )
+    )
+    assert "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv

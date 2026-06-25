@@ -102,6 +102,7 @@ def request_from_json(payload: dict) -> RunRequest:
         execution_location=payload.get("execution_location", "local_subprocess"),
         ssh=ssh,
         dangerously_skip_permissions=payload.get("dangerously_skip_permissions", False),
+        permission_mode=payload.get("permission_mode"),
         extra_cli_flags=payload.get("extra_cli_flags", []),
         claude_command=payload.get("claude_command", "claude"),
         timeout_seconds=payload.get("timeout_seconds"),

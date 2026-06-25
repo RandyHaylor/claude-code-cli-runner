@@ -130,6 +130,11 @@ class RunRequest:
       ssh: SshConfig for the remote transports.
       dangerously_skip_permissions: explicit opt-in to
         --dangerously-skip-permissions.
+      permission_mode: optional explicit permission posture (one of the claude
+        --permission-mode choices). When set it takes precedence over
+        dangerously_skip_permissions: the run launches WITH --permission-mode
+        <mode> and WITHOUT --dangerously-skip-permissions, so the agent is not
+        fully unattended (used for collaborative / manual tasks).
       extra_cli_flags: additional raw argv flags appended to the claude command.
       claude_command: the executable name/path (defaults to "claude"; tests
         point this at a stub).
@@ -147,6 +152,7 @@ class RunRequest:
     execution_location: str = LOCATION_LOCAL_SUBPROCESS
     ssh: Optional[SshConfig] = None
     dangerously_skip_permissions: bool = False
+    permission_mode: Optional[str] = None
     extra_cli_flags: List[str] = field(default_factory=list)
     claude_command: str = "claude"
     live_log_path: Optional[str] = None

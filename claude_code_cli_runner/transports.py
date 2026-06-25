@@ -38,7 +38,12 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         "stream-json",
         "--verbose",
     ]
-    if run_request.dangerously_skip_permissions:
+    # An explicit permission posture WINS over full bypass: a collaborative /
+    # manual task launches at --permission-mode <mode> and is NOT given
+    # --dangerously-skip-permissions, so the agent is not fully unattended.
+    if run_request.permission_mode:
+        argv[2:2] = ["--permission-mode", run_request.permission_mode]
+    elif run_request.dangerously_skip_permissions:
         argv.insert(2, "--dangerously-skip-permissions")
     if run_request.model:
         argv[2:2] = ["--model", run_request.model]
