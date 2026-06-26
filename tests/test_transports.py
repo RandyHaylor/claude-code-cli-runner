@@ -129,6 +129,31 @@ def test_explicit_session_id_creates_session():
     assert "--resume" not in argv
 
 
+def test_permission_mode_adds_permission_prompt_tool_stdio():
+    # raw-538/nd-251: a permission posture drives the can_use_tool control
+    # protocol over stdio, so --permission-prompt-tool stdio must be present.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            permission_mode="acceptEdits",
+        )
+    )
+    assert "--permission-prompt-tool" in argv
+    assert argv[argv.index("--permission-prompt-tool") + 1] == "stdio"
+
+
+def test_no_permission_mode_omits_permission_prompt_tool():
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            dangerously_skip_permissions=True,
+        )
+    )
+    assert "--permission-prompt-tool" not in argv
+
+
 def test_resume_session_continues_existing_session():
     # raw-538 resume-on-reply later turn: --resume <id> (continue same chat).
     argv = transports.build_base_claude_argv(

@@ -31,6 +31,16 @@ RUN_FOREVER = os.environ.get("STUB_RUN_FOREVER", "0") == "1"
 RESULT_TEXT = os.environ.get("STUB_RESULT_TEXT", "stub assistant text")
 WRITE_ARTIFACT = os.environ.get("STUB_WRITE_ARTIFACT")
 ARTIFACT_CONTENT = os.environ.get("STUB_ARTIFACT_CONTENT", "stub artifact")
+# When "1", the stub emits ONE can_use_tool control_request and waits for the
+# runner's control_response, then reports the decision in the result text
+# (so a test can assert the runner's allow/deny round-tripped). Exercises the
+# permission control protocol (raw-538/nd-251).
+REQUEST_PERMISSION = os.environ.get("STUB_REQUEST_PERMISSION", "0") == "1"
+PERMISSION_REQUEST_ID = "stub-perm-1"
+
+# Shared state for the captured permission decision (set by the stdin thread).
+_permission_decision_seen = threading.Event()
+_permission_decision = {}
 
 
 def emit(obj):
@@ -63,6 +73,28 @@ def stdin_echo_loop():
             message = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
+        # Permission control protocol: ack the initialize handshake, and capture a
+        # control_response (the operator's allow/deny) so main() can report it.
+        if message.get("type") == "control_request" and (
+            message.get("request") or {}
+        ).get("subtype") == "initialize":
+            emit(
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": message.get("request_id"),
+                        "response": {},
+                    },
+                }
+            )
+            continue
+        if message.get("type") == "control_response":
+            _permission_decision.update(
+                (message.get("response") or {}).get("response") or {}
+            )
+            _permission_decision_seen.set()
+            continue
         emit({"type": "injected_echo", "received": message})
 
 
@@ -84,6 +116,37 @@ def main():
             }
         )
         time.sleep(LINE_DELAY)
+
+    if REQUEST_PERMISSION:
+        emit(
+            {
+                "type": "control_request",
+                "request_id": PERMISSION_REQUEST_ID,
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Bash",
+                    "input": {"command": "echo hi"},
+                    "tool_use_id": "toolu_stub",
+                },
+            }
+        )
+        decided = _permission_decision_seen.wait(timeout=5)
+        behavior = _permission_decision.get("behavior") if decided else "timeout"
+        decision_text = "PERMISSION:%s" % behavior
+        emit(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": decision_text}],
+                },
+            }
+        )
+        time.sleep(LINE_DELAY)
+        emit(
+            {"type": "result", "subtype": "success", "is_error": False, "result": decision_text}
+        )
+        return
 
     if RUN_FOREVER:
         while True:

@@ -43,6 +43,12 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
     # --dangerously-skip-permissions, so the agent is not fully unattended.
     if run_request.permission_mode:
         argv[2:2] = ["--permission-mode", run_request.permission_mode]
+        # Live tool-permission escalation: with a permission posture set, drive the
+        # CLI's can_use_tool control protocol over stdio so tools needing approval
+        # emit a request the runner can answer (allow/deny) — verified flag on the
+        # claude CLI (real but not shown in --help). The runner sends the
+        # initialize handshake + control_response decisions.
+        argv += ["--permission-prompt-tool", "stdio"]
     elif run_request.dangerously_skip_permissions:
         argv.insert(2, "--dangerously-skip-permissions")
     if run_request.model:

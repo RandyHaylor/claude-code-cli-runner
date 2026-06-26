@@ -20,11 +20,13 @@ def test_control_intents_are_the_contract():
     assert live_files.CONTROL_RESUME == "resume"
     assert live_files.CONTROL_SEND_COMMAND == "send_command"
     assert live_files.CONTROL_END_AND_RETURN == "end_and_return"
+    assert live_files.CONTROL_PERMISSION_DECISION == "permission_decision"
     assert set(live_files.KNOWN_CONTROL_INTENTS) == {
         "pause",
         "resume",
         "send_command",
         "end_and_return",
+        "permission_decision",
     }
 
 
@@ -32,6 +34,7 @@ def test_run_states_are_the_contract():
     assert live_files.RUN_STATE_RUNNING == "running"
     assert live_files.RUN_STATE_PAUSED == "paused"
     assert live_files.RUN_STATE_OPERATOR_ENDED == "operator_ended"
+    assert live_files.RUN_STATE_AWAITING_PERMISSION == "awaiting_permission"
 
 
 def test_readme_documents_the_contract():

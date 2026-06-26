@@ -11,7 +11,8 @@ They are kept here, in one place, so every face of the tool shares them.
   - ``task_run_status.json``      a tiny sidecar reflecting the out-of-band run
                                   state (running / paused / operator_ended)
 
-Control intents: pause | resume | send_command | end_and_return.
+Control intents: pause | resume | send_command | end_and_return |
+permission_decision.
 """
 
 from __future__ import annotations
@@ -31,18 +32,27 @@ RUN_STATUS_FILE_NAME = "task_run_status.json"
 RUN_STATE_RUNNING = "running"
 RUN_STATE_PAUSED = "paused"
 RUN_STATE_OPERATOR_ENDED = "operator_ended"
+# The agent has requested permission for a tool use and the run is HELD awaiting
+# the operator's allow/deny decision over the control channel (live tool
+# escalation; the CLI's can_use_tool control protocol).
+RUN_STATE_AWAITING_PERMISSION = "awaiting_permission"
 
 # Control intents an external reader may write into the control channel.
 CONTROL_PAUSE = "pause"
 CONTROL_RESUME = "resume"
 CONTROL_SEND_COMMAND = "send_command"
 CONTROL_END_AND_RETURN = "end_and_return"
+# The operator's decision on a pending tool-permission request (the response to
+# the CLI's can_use_tool control_request). Carries a ``decision`` object
+# ``{request_id, behavior: "allow"|"deny", updated_input?, message?}``.
+CONTROL_PERMISSION_DECISION = "permission_decision"
 
 KNOWN_CONTROL_INTENTS = (
     CONTROL_PAUSE,
     CONTROL_RESUME,
     CONTROL_SEND_COMMAND,
     CONTROL_END_AND_RETURN,
+    CONTROL_PERMISSION_DECISION,
 )
 
 
@@ -101,12 +111,18 @@ def read_new_control_intents(
     return new_intents, len(lines)
 
 
-def build_control_intent(control: str, command_text: "str | None" = None) -> dict:
+def build_control_intent(
+    control: str,
+    command_text: "str | None" = None,
+    decision: "dict | None" = None,
+) -> dict:
     """Validate and build a control-intent record for the control channel.
 
     Carries ``{"control_intent": <intent>}`` plus, for ``send_command``, a
-    ``command_text`` string. Raises ValueError for an unknown intent or a
-    send_command missing its text.
+    ``command_text`` string, and for ``permission_decision`` a ``decision``
+    object ``{request_id, behavior: "allow"|"deny", updated_input?, message?}``.
+    Raises ValueError for an unknown intent, a send_command missing its text, or
+    a permission_decision missing request_id / a valid behavior.
     """
     if control not in KNOWN_CONTROL_INTENTS:
         raise ValueError(
@@ -120,16 +136,31 @@ def build_control_intent(control: str, command_text: "str | None" = None) -> dic
                 "a 'send_command' intent requires a non-empty 'command_text'"
             )
         intent["command_text"] = command_text
+    if control == CONTROL_PERMISSION_DECISION:
+        if not isinstance(decision, dict):
+            raise ValueError(
+                "a 'permission_decision' intent requires a 'decision' object"
+            )
+        if not decision.get("request_id"):
+            raise ValueError("a 'permission_decision' requires a 'request_id'")
+        if decision.get("behavior") not in ("allow", "deny"):
+            raise ValueError(
+                "a 'permission_decision' behavior must be 'allow' or 'deny'"
+            )
+        intent["decision"] = decision
     return intent
 
 
 def append_control_intent(
-    workspace_directory: str, control: str, command_text: "str | None" = None
+    workspace_directory: str,
+    control: str,
+    command_text: "str | None" = None,
+    decision: "dict | None" = None,
 ) -> dict:
     """Append ONE control intent to the task's control channel as a flushed
     JSONL line. Creates the workspace directory if absent. Returns the intent
     written. This is the entire out-of-band control mechanism for writers."""
-    intent = build_control_intent(control, command_text)
+    intent = build_control_intent(control, command_text, decision=decision)
     os.makedirs(workspace_directory, exist_ok=True)
     path = control_channel_path(workspace_directory)
     with open(path, "a", encoding="utf-8") as handle:

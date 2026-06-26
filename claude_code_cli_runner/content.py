@@ -109,6 +109,47 @@ def build_injected_user_message(command_text: str) -> dict:
     }
 
 
+def build_initialize_control_request(request_id: str = "init-1") -> dict:
+    """The one-time control-protocol handshake the CLI expects when driven with
+    ``--permission-prompt-tool stdio`` (verified: the Agent SDK sends this first).
+    The CLI replies with a ``control_response`` ``success``."""
+    return {
+        "type": "control_request",
+        "request_id": request_id,
+        "request": {"subtype": "initialize"},
+    }
+
+
+def build_permission_control_response(
+    request_id: str,
+    behavior: str,
+    updated_input: "dict | None" = None,
+    message: "str | None" = None,
+) -> dict:
+    """Build the stream-json ``control_response`` that answers the CLI's
+    ``can_use_tool`` permission request (verified wire shape against CLI 2.1.92
+    and the Agent SDK source).
+
+    ``behavior`` is ``"allow"`` or ``"deny"``. For allow, ``updated_input`` is the
+    (possibly rewritten) tool input echoed back so the tool runs with it. For
+    deny, ``message`` explains why (the agent sees it). ``request_id`` MUST echo
+    the request's id.
+    """
+    inner: dict = {"behavior": behavior}
+    if behavior == "allow":
+        inner["updatedInput"] = updated_input if isinstance(updated_input, dict) else {}
+    else:
+        inner["message"] = message or "Denied by the operator."
+    return {
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": inner,
+        },
+    }
+
+
 def list_produced_artifacts(workspace_directory: str, baseline: "set | None") -> list:
     """List files under the workspace produced/changed since ``baseline``.
 

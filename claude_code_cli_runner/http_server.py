@@ -250,6 +250,7 @@ def build_streaming_http_server(
             workspace_token = payload.get("workspace_token") or payload.get("run_id")
             control_intent = payload.get("control_intent")
             command_text = payload.get("command_text")
+            decision = payload.get("decision")
             if not workspace_token or not control_intent:
                 self._error(
                     400, "control requires 'workspace_token' (or 'run_id') and 'control_intent'"
@@ -257,7 +258,8 @@ def build_streaming_http_server(
                 return
             try:
                 written = append_control_intent(
-                    workspace_token, control_intent, command_text=command_text
+                    workspace_token, control_intent,
+                    command_text=command_text, decision=decision,
                 )
             except ValueError as cause:
                 self._error(400, "bad control intent: %s" % cause)
@@ -348,14 +350,19 @@ def post_control(
     control_intent: str,
     command_text: "str | None" = None,
     access_token: "str | None" = None,
+    decision: "dict | None" = None,
 ) -> dict:
     """Client: drive a control intent for an active run via ``POST /control``.
 
     ``workspace_token`` is the run identity surfaced by the ``run_started`` line
-    (== the run's workspace_directory). Returns the server's JSON response."""
+    (== the run's workspace_directory). ``decision`` carries a permission_decision
+    object ``{request_id, behavior, updated_input?, message?}``. Returns the
+    server's JSON response."""
     payload = {"workspace_token": workspace_token, "control_intent": control_intent}
     if command_text is not None:
         payload["command_text"] = command_text
+    if decision is not None:
+        payload["decision"] = decision
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         server_url.rstrip("/") + "/control",

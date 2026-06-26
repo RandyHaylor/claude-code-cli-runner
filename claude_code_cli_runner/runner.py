@@ -21,7 +21,9 @@ import time
 import uuid
 
 from .content import (
+    build_initialize_control_request,
     build_injected_user_message,
+    build_permission_control_response,
     build_user_message,
     extract_text_only,
     list_produced_artifacts,
@@ -30,8 +32,10 @@ from .content import (
 from .live_files import (
     CONTROL_END_AND_RETURN,
     CONTROL_PAUSE,
+    CONTROL_PERMISSION_DECISION,
     CONTROL_RESUME,
     CONTROL_SEND_COMMAND,
+    RUN_STATE_AWAITING_PERMISSION,
     RUN_STATE_OPERATOR_ENDED,
     RUN_STATE_PAUSED,
     RUN_STATE_RUNNING,
@@ -307,6 +311,14 @@ def _stream_one_run(
         except (BrokenPipeError, ValueError, OSError):
             pass
 
+    # Live tool-permission escalation via the CLI's can_use_tool control protocol
+    # is active only when a permission posture is set (transports launches the CLI
+    # with --permission-prompt-tool stdio in that case). Send the one-time
+    # initialize handshake the CLI expects BEFORE the prompt (as the Agent SDK does).
+    permission_prompt_enabled = bool(getattr(run_request, "permission_mode", None))
+    if permission_prompt_enabled:
+        write_stream_json_message(build_initialize_control_request())
+
     # Deliver the multimodal prompt as a stdin stream-json user message. stdin
     # stays OPEN afterwards so mid-run send_command injection still works.
     write_stream_json_message(build_user_message(input_content))
@@ -314,6 +326,7 @@ def _stream_one_run(
     consumed_control_lines = 0
     paused = False
     operator_ended = False
+    pending_permission_decision = None
     result_seen = False
     final_result_event = None
     collected_text_parts: list = []
@@ -365,6 +378,7 @@ def _stream_one_run(
 
     def drain_control_channel() -> bool:
         nonlocal consumed_control_lines, paused, operator_ended
+        nonlocal pending_permission_decision
         intents, consumed_control_lines = read_new_control_intents(
             control_path, consumed_control_lines
         )
@@ -380,11 +394,74 @@ def _stream_one_run(
                 write_stream_json_message(
                     build_injected_user_message(intent.get("command_text", ""))
                 )
+            elif kind == CONTROL_PERMISSION_DECISION:
+                # The operator's allow/deny for a pending tool-permission request;
+                # the awaiting loop below picks it up and writes the control_response.
+                pending_permission_decision = intent.get("decision")
             elif kind == CONTROL_END_AND_RETURN:
                 operator_ended = True
                 _reflect(status_path, RUN_STATE_OPERATOR_ENDED)
                 return True
         return False
+
+    def await_permission_decision_and_respond(control_request_chunk) -> bool:
+        """Hold the run while the agent waits for the operator's permission
+        decision on a ``can_use_tool`` request, then write the ``control_response``
+        to stdin so the tool runs (allow) or is blocked (deny). Returns True if the
+        operator ENDED the run during the wait (caller should stop)."""
+        nonlocal pending_permission_decision
+        request = control_request_chunk.get("request", {}) or {}
+        request_id = control_request_chunk.get("request_id")
+        # Surface the request as a DISTINCT live-log record the dashboard renders
+        # with approve/deny controls.
+        log_handle.write(
+            json.dumps(
+                {
+                    "received_at": time.time(),
+                    "permission_request": {
+                        "request_id": request_id,
+                        "tool_name": request.get("tool_name"),
+                        "input": request.get("input"),
+                        "tool_use_id": request.get("tool_use_id"),
+                        "decision_reason": request.get("decision_reason"),
+                        "permission_suggestions": request.get("permission_suggestions"),
+                    },
+                }
+            )
+            + "\n"
+        )
+        log_handle.flush()
+        os.fsync(log_handle.fileno())
+        _reflect(status_path, RUN_STATE_AWAITING_PERMISSION)
+        pending_permission_decision = None
+        while True:
+            if drain_control_channel():
+                return True  # operator ended the run while we awaited the decision
+            if pending_permission_decision is not None:
+                decision = pending_permission_decision or {}
+                pending_permission_decision = None
+                write_stream_json_message(
+                    build_permission_control_response(
+                        request_id,
+                        decision.get("behavior", "deny"),
+                        updated_input=decision.get("updated_input")
+                        or request.get("input"),
+                        message=decision.get("message"),
+                    )
+                )
+                _reflect(status_path, RUN_STATE_RUNNING)
+                return False
+            if deadline is not None and time.monotonic() > deadline:
+                # Timed out — deny so the run can finish rather than hang forever.
+                write_stream_json_message(
+                    build_permission_control_response(
+                        request_id, "deny",
+                        message="Timed out awaiting the operator's decision.",
+                    )
+                )
+                _reflect(status_path, RUN_STATE_RUNNING)
+                return False
+            time.sleep(pause_poll_seconds)
 
     try:
         for raw_line in process.stdout:
@@ -404,6 +481,38 @@ def _stream_one_run(
 
             if deadline is not None and time.monotonic() > deadline:
                 break
+
+            # Control-protocol lines exist only with --permission-prompt-tool stdio
+            # (permission_prompt_enabled). A can_use_tool request HOLDS the run
+            # awaiting the operator's allow/deny; other control_response/keep_alive/
+            # cancel lines are protocol bookkeeping — recorded, not rendered.
+            if permission_prompt_enabled:
+                try:
+                    protocol_chunk = json.loads(raw_line)
+                except (json.JSONDecodeError, ValueError):
+                    protocol_chunk = None
+                if isinstance(protocol_chunk, dict):
+                    protocol_type = protocol_chunk.get("type")
+                    if protocol_type == "control_request" and (
+                        protocol_chunk.get("request") or {}
+                    ).get("subtype") == "can_use_tool":
+                        if await_permission_decision_and_respond(protocol_chunk):
+                            break
+                        continue
+                    if protocol_type in (
+                        "control_response",
+                        "control_cancel_request",
+                        "keep_alive",
+                    ):
+                        log_handle.write(
+                            json.dumps(
+                                {"received_at": time.time(), "protocol": protocol_chunk}
+                            )
+                            + "\n"
+                        )
+                        log_handle.flush()
+                        os.fsync(log_handle.fileno())
+                        continue
 
             append_chunk_to_live_log(raw_line)
 
