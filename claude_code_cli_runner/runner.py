@@ -440,15 +440,17 @@ def _stream_one_run(
             if pending_permission_decision is not None:
                 decision = pending_permission_decision or {}
                 pending_permission_decision = None
+                behavior = decision.get("behavior", "deny")
                 write_stream_json_message(
                     build_permission_control_response(
                         request_id,
-                        decision.get("behavior", "deny"),
+                        behavior,
                         updated_input=decision.get("updated_input")
                         or request.get("input"),
                         message=decision.get("message"),
                     )
                 )
+                _record_permission_resolved(request_id, behavior)
                 _reflect(status_path, RUN_STATE_RUNNING)
                 return False
             if deadline is not None and time.monotonic() > deadline:
@@ -459,9 +461,29 @@ def _stream_one_run(
                         message="Timed out awaiting the operator's decision.",
                     )
                 )
+                _record_permission_resolved(request_id, "deny")
                 _reflect(status_path, RUN_STATE_RUNNING)
                 return False
             time.sleep(pause_poll_seconds)
+
+    def _record_permission_resolved(request_id, behavior) -> None:
+        """Mark a permission request resolved IN THE LIVE LOG (which is teed to
+        the host), so a reader can tell a pending request from a decided one
+        without depending on the resource-local run-state sidecar."""
+        log_handle.write(
+            json.dumps(
+                {
+                    "received_at": time.time(),
+                    "permission_resolved": {
+                        "request_id": request_id,
+                        "behavior": behavior,
+                    },
+                }
+            )
+            + "\n"
+        )
+        log_handle.flush()
+        os.fsync(log_handle.fileno())
 
     try:
         for raw_line in process.stdout:

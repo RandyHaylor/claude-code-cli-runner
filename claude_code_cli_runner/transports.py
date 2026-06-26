@@ -10,6 +10,7 @@ never lands on a process table — for local or remote runs alike.
 
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 
@@ -49,6 +50,14 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         # claude CLI (real but not shown in --help). The runner sends the
         # initialize handshake + control_response decisions.
         argv += ["--permission-prompt-tool", "stdio"]
+        # Pin the session's default permission posture to the requested mode so a
+        # manual/collaborative run actually GATES — otherwise a host/VM standing
+        # ``defaultMode: bypassPermissions`` in settings.json leaks through and
+        # auto-allows tools (verified on the sandbox VM), defeating the prompt.
+        argv += [
+            "--settings",
+            json.dumps({"permissions": {"defaultMode": run_request.permission_mode}}),
+        ]
     elif run_request.dangerously_skip_permissions:
         argv.insert(2, "--dangerously-skip-permissions")
     if run_request.model:

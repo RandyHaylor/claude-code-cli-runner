@@ -141,6 +141,11 @@ def test_permission_mode_adds_permission_prompt_tool_stdio():
     )
     assert "--permission-prompt-tool" in argv
     assert argv[argv.index("--permission-prompt-tool") + 1] == "stdio"
+    # The posture is pinned via --settings so a host/VM bypass default cannot
+    # leak through and skip the gate.
+    assert "--settings" in argv
+    settings_json = argv[argv.index("--settings") + 1]
+    assert '"defaultMode": "acceptEdits"' in settings_json
 
 
 def test_no_permission_mode_omits_permission_prompt_tool():

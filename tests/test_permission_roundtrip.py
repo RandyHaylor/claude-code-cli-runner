@@ -58,9 +58,19 @@ def _run_with_permission_decision(tmp_path, behavior):
     return holder["result"]
 
 
+def _live_log_text(tmp_path):
+    with open(live_log_path(str(tmp_path)), encoding="utf-8") as handle:
+        return handle.read()
+
+
 def test_allow_decision_round_trips_to_the_agent(tmp_path):
     result = _run_with_permission_decision(tmp_path, "allow")
     assert "PERMISSION:allow" in result.assistant_text
+    # The decision is marked resolved in the live log (the host-visible signal the
+    # dashboard uses to stop showing the request as actionable).
+    log = _live_log_text(tmp_path)
+    assert "permission_request" in log
+    assert "permission_resolved" in log
 
 
 def test_deny_decision_round_trips_to_the_agent(tmp_path):
