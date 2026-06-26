@@ -135,6 +135,14 @@ class RunRequest:
         dangerously_skip_permissions: the run launches WITH --permission-mode
         <mode> and WITHOUT --dangerously-skip-permissions, so the agent is not
         fully unattended (used for collaborative / manual tasks).
+      session_id: optional EXPLICIT claude session id for this run, so the
+        session is resumable across turns (the resume-on-reply model for
+        collaborative tasks). When set, the run uses this id instead of an
+        auto-generated one, and the reusable-context prime/fork path is skipped.
+      resume_session: when True (with session_id set) the run CONTINUES that
+        existing session via --resume <session_id> (a later turn of the same
+        chat); when False with session_id set it CREATES the session via
+        --session-id <session_id> (the first turn).
       extra_cli_flags: additional raw argv flags appended to the claude command.
       claude_command: the executable name/path (defaults to "claude"; tests
         point this at a stub).
@@ -153,6 +161,8 @@ class RunRequest:
     ssh: Optional[SshConfig] = None
     dangerously_skip_permissions: bool = False
     permission_mode: Optional[str] = None
+    session_id: Optional[str] = None
+    resume_session: bool = False
     extra_cli_flags: List[str] = field(default_factory=list)
     claude_command: str = "claude"
     live_log_path: Optional[str] = None

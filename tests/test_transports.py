@@ -114,3 +114,30 @@ def test_no_permission_mode_keeps_skip_permissions_path():
     )
     assert "--dangerously-skip-permissions" in argv
     assert "--permission-mode" not in argv
+
+
+def test_explicit_session_id_creates_session():
+    # raw-538 resume-on-reply turn 1: --session-id <id> (create), not --resume.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            session_id="sess-123",
+        )
+    )
+    assert argv[argv.index("--session-id") + 1] == "sess-123"
+    assert "--resume" not in argv
+
+
+def test_resume_session_continues_existing_session():
+    # raw-538 resume-on-reply later turn: --resume <id> (continue same chat).
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            session_id="sess-123",
+            resume_session=True,
+        )
+    )
+    assert argv[argv.index("--resume") + 1] == "sess-123"
+    assert "--session-id" not in argv

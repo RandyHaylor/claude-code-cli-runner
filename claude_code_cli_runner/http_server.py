@@ -103,6 +103,8 @@ def request_from_json(payload: dict) -> RunRequest:
         ssh=ssh,
         dangerously_skip_permissions=payload.get("dangerously_skip_permissions", False),
         permission_mode=payload.get("permission_mode"),
+        session_id=payload.get("session_id"),
+        resume_session=payload.get("resume_session", False),
         extra_cli_flags=payload.get("extra_cli_flags", []),
         claude_command=payload.get("claude_command", "claude"),
         timeout_seconds=payload.get("timeout_seconds"),

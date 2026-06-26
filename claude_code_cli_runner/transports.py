@@ -47,6 +47,15 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         argv.insert(2, "--dangerously-skip-permissions")
     if run_request.model:
         argv[2:2] = ["--model", run_request.model]
+    # Explicit session id so the session is resumable across turns (resume-on-
+    # reply, collaborative tasks). resume_session => CONTINUE the existing
+    # session; otherwise CREATE it with this id. (The prime/fork reuse path uses
+    # its own argv builders and never sets run_request.session_id, so no clash.)
+    if run_request.session_id:
+        if run_request.resume_session:
+            argv += ["--resume", run_request.session_id]
+        else:
+            argv += ["--session-id", run_request.session_id]
     argv.extend(run_request.extra_cli_flags)
     return argv
 

@@ -77,7 +77,12 @@ def run_claude_code_task(
     if build_command is None:
         build_command = build_command_for
 
+    # An EXPLICIT session id (resume-on-reply, collaborative turns) owns the
+    # session lifecycle itself, so it never goes through the prime/fork reuse
+    # path: run a single streaming turn whose argv carries --session-id/--resume.
     reuse = run_request.reusable_context
+    if run_request.session_id:
+        reuse = None
     if reuse is not None and run_request.enable_session_reuse:
         return _run_with_session_reuse(
             run_request,
