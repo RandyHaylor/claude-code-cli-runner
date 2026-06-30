@@ -24,6 +24,10 @@ class RunResult:
     live_log_path: absolute path of the raw stream-log JSONL file.
     run_state: the final out-of-band run-state annotation.
     workspace_directory: where the run happened / live files live.
+    harness_stderr: the claude process's captured stderr. The actual error text
+      when a run fails (e.g. an ``error_during_execution`` result carries no
+      message); previously piped but never read, so failures surfaced only as a
+      bare exit code. Empty on a clean run.
     """
 
     assistant_text: str = ""
@@ -34,6 +38,7 @@ class RunResult:
     live_log_path: str = ""
     run_state: str = ""
     workspace_directory: str = ""
+    harness_stderr: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -45,4 +50,5 @@ class RunResult:
             "live_log_path": self.live_log_path,
             "run_state": self.run_state,
             "workspace_directory": self.workspace_directory,
+            "harness_stderr": self.harness_stderr,
         }

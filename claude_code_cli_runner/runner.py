@@ -485,6 +485,7 @@ def _stream_one_run(
         log_handle.flush()
         os.fsync(log_handle.fileno())
 
+    captured_harness_stderr = ""
     try:
         for raw_line in process.stdout:
             raw_line = raw_line.rstrip("\n")
@@ -554,6 +555,14 @@ def _stream_one_run(
                 _terminate_process(process)
         if exit_code is None:
             exit_code = process.poll()
+        # Drain the harness's stderr so a failed run can report WHY it failed (an
+        # error_during_execution result carries no message). Best-effort: the pipe
+        # was always opened but never read, so the real error text was lost.
+        try:
+            if process.stderr is not None:
+                captured_harness_stderr = (process.stderr.read() or "").strip()
+        except (OSError, ValueError):
+            captured_harness_stderr = ""
 
     final_run_state = RUN_STATE_OPERATOR_ENDED if operator_ended else RUN_STATE_RUNNING
     if not operator_ended:
@@ -574,6 +583,7 @@ def _stream_one_run(
         live_log_path=log_path,
         run_state=final_run_state,
         workspace_directory=workspace_directory,
+        harness_stderr=captured_harness_stderr,
     )
 
 
