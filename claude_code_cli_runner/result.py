@@ -28,6 +28,12 @@ class RunResult:
       when a run fails (e.g. an ``error_during_execution`` result carries no
       message); previously piped but never read, so failures surfaced only as a
       bare exit code. Empty on a clean run.
+    token_usage: cumulative token accounting for the run, collected from the
+      stream's usage-bearing chunks and ALWAYS reported:
+      ``{input_tokens, output_tokens, cache_creation_input_tokens,
+      cache_read_input_tokens, counted_tokens}``. ``counted_tokens`` is what
+      limits compare against = input + output + cache_creation (cache READS
+      excluded — they inflate 10-100x and would make limits meaningless).
     """
 
     assistant_text: str = ""
@@ -39,6 +45,7 @@ class RunResult:
     run_state: str = ""
     workspace_directory: str = ""
     harness_stderr: str = ""
+    token_usage: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -51,4 +58,5 @@ class RunResult:
             "run_state": self.run_state,
             "workspace_directory": self.workspace_directory,
             "harness_stderr": self.harness_stderr,
+            "token_usage": self.token_usage,
         }

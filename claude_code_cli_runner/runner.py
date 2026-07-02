@@ -39,6 +39,7 @@ from .live_files import (
     RUN_STATE_AWAITING_PERMISSION,
     RUN_STATE_IDLE_KILLED,
     RUN_STATE_OPERATOR_ENDED,
+    RUN_STATE_TOKEN_LIMIT_HALTED,
     RUN_STATE_PAUSED,
     RUN_STATE_RUNNING,
     control_channel_path,
@@ -379,6 +380,58 @@ def _stream_one_run(
             daemon=True,
         ).start()
 
+    # TOKEN ACCOUNTING (always collected + reported) and the HARD token-limit
+    # halt (the runner's duty; the caller only supplies task_token_limit).
+    # counted_tokens = input + output + cache_creation; cache READS excluded.
+    cumulative_token_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "counted_tokens": 0,
+    }
+    usage_bearing_deltas_seen = 0
+    token_limit_halted = False
+
+    def _accumulate_usage_object(usage_object) -> None:
+        nonlocal usage_bearing_deltas_seen
+        if not isinstance(usage_object, dict):
+            return
+        for field_name in (
+            "input_tokens", "output_tokens",
+            "cache_creation_input_tokens", "cache_read_input_tokens",
+        ):
+            value = usage_object.get(field_name)
+            if isinstance(value, (int, float)):
+                cumulative_token_usage[field_name] += int(value)
+        cumulative_token_usage["counted_tokens"] = (
+            cumulative_token_usage["input_tokens"]
+            + cumulative_token_usage["output_tokens"]
+            + cumulative_token_usage["cache_creation_input_tokens"]
+        )
+        usage_bearing_deltas_seen += 1
+
+    def accumulate_token_usage_from_chunk(chunk) -> None:
+        """Per-turn usage arrives on the stream's message_delta events; the
+        final result event's usage duplicates the last turn's, so it is used
+        ONLY as a fallback when no delta ever carried usage."""
+        if not isinstance(chunk, dict):
+            return
+        if chunk.get("type") == "stream_event":
+            event = chunk.get("event") or {}
+            if isinstance(event, dict) and event.get("type") == "message_delta":
+                _accumulate_usage_object(event.get("usage"))
+        elif chunk.get("type") == "result" and usage_bearing_deltas_seen == 0:
+            _accumulate_usage_object(chunk.get("usage"))
+
+    def token_limit_reached() -> bool:
+        if not run_request.task_token_limit:
+            return False
+        return (
+            cumulative_token_usage["counted_tokens"]
+            >= int(run_request.task_token_limit)
+        )
+
     def render_text_from_chunk(chunk):
         nonlocal final_result_event
         if not isinstance(chunk, dict):
@@ -412,6 +465,7 @@ def _stream_one_run(
         else:
             record["chunk"] = chunk
             render_text_from_chunk(chunk)
+            accumulate_token_usage_from_chunk(chunk)
             if isinstance(chunk, dict) and chunk.get("type") == "result":
                 result_seen = True
         log_handle.write(json.dumps(record) + "\n")
@@ -593,6 +647,27 @@ def _stream_one_run(
 
             append_chunk_to_live_log(raw_line)
 
+            if token_limit_reached() and not result_seen:
+                # HARD HALT (the runner's duty): the run consumed its whole
+                # token budget — stop the harness NOW and report it as a coded
+                # halt for the caller's escalation flow.
+                token_limit_halted = True
+                _reflect(status_path, RUN_STATE_TOKEN_LIMIT_HALTED)
+                log_handle.write(
+                    json.dumps({
+                        "received_at": time.time(),
+                        "runner_token_limit_halt": {
+                            "task_token_limit": run_request.task_token_limit,
+                            "token_usage": dict(cumulative_token_usage),
+                            "note": "halted due to token limit for task reached",
+                        },
+                    }) + "\n"
+                )
+                log_handle.flush()
+                os.fsync(log_handle.fileno())
+                _terminate_process(process)
+                break
+
             if result_seen:
                 break
     finally:
@@ -643,6 +718,17 @@ def _stream_one_run(
                 "runner killed the harness process: no stream activity within "
                 "the idle budget (%.0fs)" % float(run_request.idle_kill_seconds)
             )
+    if token_limit_halted:
+        final_run_state = RUN_STATE_TOKEN_LIMIT_HALTED
+        if not captured_harness_stderr:
+            captured_harness_stderr = (
+                "halted due to token limit for task reached: counted %d of "
+                "limit %d tokens"
+                % (
+                    cumulative_token_usage["counted_tokens"],
+                    int(run_request.task_token_limit),
+                )
+            )
 
     produced = list_produced_artifacts(workspace_directory, baseline_files)
 
@@ -658,6 +744,7 @@ def _stream_one_run(
         run_state=final_run_state,
         workspace_directory=workspace_directory,
         harness_stderr=captured_harness_stderr,
+        token_usage=dict(cumulative_token_usage),
     )
 
 

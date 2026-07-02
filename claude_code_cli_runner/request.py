@@ -154,6 +154,12 @@ class RunRequest:
         is the runner's duty; the caller only supplies the policy value).
         Waiting on an operator permission decision and operator-paused time do
         NOT count as idleness. None disables the watchdog.
+      task_token_limit: optional hard token budget for the run — the RUNNER
+        autonomously halts the harness process the moment the run's cumulative
+        counted tokens (input + output + cache-creation; cache reads excluded)
+        reach this number, and reports the halt as a coded result (run_state
+        token_limit_halted). The caller only supplies the policy value; usage
+        is always collected and reported either way. None disables the halt.
       reusable_context: optional leading ReusableContext (prime-once/fork model).
       enable_session_reuse: best-effort opt-out — when False, the reusable
         context (if any) is always PREPENDED inline; never primed/forked.
@@ -175,6 +181,7 @@ class RunRequest:
     run_status_path: Optional[str] = None
     timeout_seconds: Optional[float] = None
     idle_kill_seconds: Optional[float] = None
+    task_token_limit: Optional[int] = None
     reusable_context: Optional[ReusableContext] = None
     enable_session_reuse: bool = True
 

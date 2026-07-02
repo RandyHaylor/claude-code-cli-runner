@@ -40,6 +40,9 @@ RUN_STATE_AWAITING_PERMISSION = "awaiting_permission"
 # longer than the caller's idle_kill_seconds policy (killing a timed-out run is
 # the runner's explicit duty; the caller only dictates the policy value).
 RUN_STATE_IDLE_KILLED = "idle_killed"
+# The runner itself HALTED the harness process because the run's cumulative
+# counted tokens reached the caller's task_token_limit policy value.
+RUN_STATE_TOKEN_LIMIT_HALTED = "token_limit_halted"
 
 # Control intents an external reader may write into the control channel.
 CONTROL_PAUSE = "pause"

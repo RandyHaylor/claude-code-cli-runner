@@ -109,6 +109,7 @@ def request_from_json(payload: dict) -> RunRequest:
         claude_command=payload.get("claude_command", "claude"),
         timeout_seconds=payload.get("timeout_seconds"),
         idle_kill_seconds=payload.get("idle_kill_seconds"),
+        task_token_limit=payload.get("task_token_limit"),
         reusable_context=reusable_context,
         enable_session_reuse=payload.get("enable_session_reuse", True),
     )
