@@ -63,3 +63,8 @@ __all__ = [
     "control_channel_path",
     "run_status_path",
 ]
+
+# The runner code version reported by GET /version — bumped on every
+# behavior-affecting change so callers can enforce a required version
+# (no silent deployment skew).
+RUNNER_CODE_VERSION = "2026.07.02.1"
