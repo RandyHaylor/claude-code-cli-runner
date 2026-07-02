@@ -36,6 +36,10 @@ RUN_STATE_OPERATOR_ENDED = "operator_ended"
 # the operator's allow/deny decision over the control channel (live tool
 # escalation; the CLI's can_use_tool control protocol).
 RUN_STATE_AWAITING_PERMISSION = "awaiting_permission"
+# The runner itself KILLED the harness process because it streamed nothing for
+# longer than the caller's idle_kill_seconds policy (killing a timed-out run is
+# the runner's explicit duty; the caller only dictates the policy value).
+RUN_STATE_IDLE_KILLED = "idle_killed"
 
 # Control intents an external reader may write into the control channel.
 CONTROL_PAUSE = "pause"

@@ -149,6 +149,11 @@ class RunRequest:
       live_log_path / control_channel_path / run_status_path: optional explicit
         paths; default to the contract names under workspace_directory.
       timeout_seconds: optional overall wall-clock budget for the run.
+      idle_kill_seconds: optional idle budget — the RUNNER kills the harness
+        process when it streams NOTHING for this long (killing a timed-out run
+        is the runner's duty; the caller only supplies the policy value).
+        Waiting on an operator permission decision and operator-paused time do
+        NOT count as idleness. None disables the watchdog.
       reusable_context: optional leading ReusableContext (prime-once/fork model).
       enable_session_reuse: best-effort opt-out — when False, the reusable
         context (if any) is always PREPENDED inline; never primed/forked.
@@ -169,6 +174,7 @@ class RunRequest:
     control_channel_path: Optional[str] = None
     run_status_path: Optional[str] = None
     timeout_seconds: Optional[float] = None
+    idle_kill_seconds: Optional[float] = None
     reusable_context: Optional[ReusableContext] = None
     enable_session_reuse: bool = True
 

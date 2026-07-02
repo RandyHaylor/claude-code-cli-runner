@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 
@@ -36,6 +37,7 @@ from .live_files import (
     CONTROL_RESUME,
     CONTROL_SEND_COMMAND,
     RUN_STATE_AWAITING_PERMISSION,
+    RUN_STATE_IDLE_KILLED,
     RUN_STATE_OPERATOR_ENDED,
     RUN_STATE_PAUSED,
     RUN_STATE_RUNNING,
@@ -337,6 +339,46 @@ def _stream_one_run(
         else None
     )
 
+    # IDLE-KILL WATCHDOG (the runner's explicit duty: kill a run whose harness
+    # streams nothing for idle_kill_seconds — the caller only dictates the
+    # policy value). Waiting on an operator permission decision and
+    # operator-paused time are NOT idleness and suppress the watchdog.
+    idle_watchdog_shared_state = {
+        "last_stream_activity_monotonic": time.monotonic(),
+        "idleness_suppressed": False,
+        "run_finished": False,
+        "idle_killed": False,
+    }
+
+    def watch_for_idle_harness_and_kill():
+        idle_budget = float(run_request.idle_kill_seconds)
+        while not idle_watchdog_shared_state["run_finished"]:
+            time.sleep(min(1.0, idle_budget / 4))
+            if idle_watchdog_shared_state["run_finished"]:
+                return
+            if idle_watchdog_shared_state["idleness_suppressed"]:
+                # Permission wait / pause: reset the clock so post-wait time
+                # is measured fresh.
+                idle_watchdog_shared_state["last_stream_activity_monotonic"] = (
+                    time.monotonic()
+                )
+                continue
+            idle_for = time.monotonic() - idle_watchdog_shared_state[
+                "last_stream_activity_monotonic"
+            ]
+            if idle_for > idle_budget:
+                idle_watchdog_shared_state["idle_killed"] = True
+                _reflect(status_path, RUN_STATE_IDLE_KILLED)
+                _terminate_process(process)
+                return
+
+    if run_request.idle_kill_seconds:
+        threading.Thread(
+            target=watch_for_idle_harness_and_kill,
+            name="runner-idle-kill-watchdog",
+            daemon=True,
+        ).start()
+
     def render_text_from_chunk(chunk):
         nonlocal final_result_event
         if not isinstance(chunk, dict):
@@ -433,38 +475,44 @@ def _stream_one_run(
         log_handle.flush()
         os.fsync(log_handle.fileno())
         _reflect(status_path, RUN_STATE_AWAITING_PERMISSION)
+        # Waiting on a HUMAN decision is not harness idleness — suppress the
+        # idle-kill watchdog for the duration of the wait.
+        idle_watchdog_shared_state["idleness_suppressed"] = True
         pending_permission_decision = None
-        while True:
-            if drain_control_channel():
-                return True  # operator ended the run while we awaited the decision
-            if pending_permission_decision is not None:
-                decision = pending_permission_decision or {}
-                pending_permission_decision = None
-                behavior = decision.get("behavior", "deny")
-                write_stream_json_message(
-                    build_permission_control_response(
-                        request_id,
-                        behavior,
-                        updated_input=decision.get("updated_input")
-                        or request.get("input"),
-                        message=decision.get("message"),
+        try:
+            while True:
+                if drain_control_channel():
+                    return True  # operator ended the run while we awaited the decision
+                if pending_permission_decision is not None:
+                    decision = pending_permission_decision or {}
+                    pending_permission_decision = None
+                    behavior = decision.get("behavior", "deny")
+                    write_stream_json_message(
+                        build_permission_control_response(
+                            request_id,
+                            behavior,
+                            updated_input=decision.get("updated_input")
+                            or request.get("input"),
+                            message=decision.get("message"),
+                        )
                     )
-                )
-                _record_permission_resolved(request_id, behavior)
-                _reflect(status_path, RUN_STATE_RUNNING)
-                return False
-            if deadline is not None and time.monotonic() > deadline:
-                # Timed out — deny so the run can finish rather than hang forever.
-                write_stream_json_message(
-                    build_permission_control_response(
-                        request_id, "deny",
-                        message="Timed out awaiting the operator's decision.",
+                    _record_permission_resolved(request_id, behavior)
+                    _reflect(status_path, RUN_STATE_RUNNING)
+                    return False
+                if deadline is not None and time.monotonic() > deadline:
+                    # Timed out — deny so the run can finish rather than hang forever.
+                    write_stream_json_message(
+                        build_permission_control_response(
+                            request_id, "deny",
+                            message="Timed out awaiting the operator's decision.",
+                        )
                     )
-                )
-                _record_permission_resolved(request_id, "deny")
-                _reflect(status_path, RUN_STATE_RUNNING)
-                return False
-            time.sleep(pause_poll_seconds)
+                    _record_permission_resolved(request_id, "deny")
+                    _reflect(status_path, RUN_STATE_RUNNING)
+                    return False
+                time.sleep(pause_poll_seconds)
+        finally:
+            idle_watchdog_shared_state["idleness_suppressed"] = False
 
     def _record_permission_resolved(request_id, behavior) -> None:
         """Mark a permission request resolved IN THE LIVE LOG (which is teed to
@@ -488,6 +536,9 @@ def _stream_one_run(
     captured_harness_stderr = ""
     try:
         for raw_line in process.stdout:
+            idle_watchdog_shared_state["last_stream_activity_monotonic"] = (
+                time.monotonic()
+            )
             raw_line = raw_line.rstrip("\n")
             if raw_line == "":
                 continue
@@ -495,10 +546,13 @@ def _stream_one_run(
             if drain_control_channel():
                 break
 
-            while paused:
-                if drain_control_channel():
-                    break
-                time.sleep(pause_poll_seconds)
+            if paused:
+                idle_watchdog_shared_state["idleness_suppressed"] = True
+                while paused:
+                    if drain_control_channel():
+                        break
+                    time.sleep(pause_poll_seconds)
+                idle_watchdog_shared_state["idleness_suppressed"] = False
             if operator_ended:
                 break
 
@@ -542,6 +596,19 @@ def _stream_one_run(
             if result_seen:
                 break
     finally:
+        idle_watchdog_shared_state["run_finished"] = True
+        if idle_watchdog_shared_state["idle_killed"]:
+            # Make the kill visible in the teed live log, not just the sidecar.
+            log_handle.write(
+                json.dumps({
+                    "received_at": time.time(),
+                    "runner_idle_kill": {
+                        "idle_kill_seconds": run_request.idle_kill_seconds,
+                        "note": "runner killed the harness process: no stream "
+                                "activity within the idle budget",
+                    },
+                }) + "\n"
+            )
         log_handle.flush()
         os.fsync(log_handle.fileno())
         log_handle.close()
@@ -569,6 +636,13 @@ def _stream_one_run(
         # Reflect a terminal "running->done" by leaving running; the sidecar's
         # job is the live annotation, and the result carries the real outcome.
         final_run_state = read_run_state_value(status_path) or RUN_STATE_RUNNING
+    if idle_watchdog_shared_state["idle_killed"]:
+        final_run_state = RUN_STATE_IDLE_KILLED
+        if not captured_harness_stderr:
+            captured_harness_stderr = (
+                "runner killed the harness process: no stream activity within "
+                "the idle budget (%.0fs)" % float(run_request.idle_kill_seconds)
+            )
 
     produced = list_produced_artifacts(workspace_directory, baseline_files)
 
