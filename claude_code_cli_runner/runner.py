@@ -295,6 +295,12 @@ def _stream_one_run(
             os.fsync(note_handle.fileno())
     _reflect(status_path, RUN_STATE_RUNNING)
 
+    harness_environment = dict(os.environ)
+    if run_request.run_environment_variables:
+        harness_environment.update({
+            str(name): str(value)
+            for name, value in run_request.run_environment_variables.items()
+        })
     process = subprocess.Popen(
         argv,
         cwd=workspace_directory,
@@ -303,6 +309,7 @@ def _stream_one_run(
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        env=harness_environment,
     )
 
     def write_stream_json_message(message: dict) -> None:

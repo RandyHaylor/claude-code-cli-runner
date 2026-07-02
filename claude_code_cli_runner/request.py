@@ -154,6 +154,11 @@ class RunRequest:
         is the runner's duty; the caller only supplies the policy value).
         Waiting on an operator permission decision and operator-paused time do
         NOT count as idleness. None disables the watchdog.
+      run_environment_variables: optional {NAME: value} environment variables
+        set on the harness process for THIS run (merged over the serve's own
+        environment). The caller uses this to hand a run its configured
+        tooling facts (e.g. connection URLs/tokens) as plain environment —
+        configuration, never installation.
       task_token_limit: optional hard token budget for the run — the RUNNER
         autonomously halts the harness process the moment the run's cumulative
         counted tokens (input + output + cache-creation; cache reads excluded)
@@ -182,6 +187,7 @@ class RunRequest:
     timeout_seconds: Optional[float] = None
     idle_kill_seconds: Optional[float] = None
     task_token_limit: Optional[int] = None
+    run_environment_variables: dict = field(default_factory=dict)
     reusable_context: Optional[ReusableContext] = None
     enable_session_reuse: bool = True
 

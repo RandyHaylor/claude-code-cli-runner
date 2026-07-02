@@ -110,6 +110,7 @@ def request_from_json(payload: dict) -> RunRequest:
         timeout_seconds=payload.get("timeout_seconds"),
         idle_kill_seconds=payload.get("idle_kill_seconds"),
         task_token_limit=payload.get("task_token_limit"),
+        run_environment_variables=payload.get("run_environment_variables") or {},
         reusable_context=reusable_context,
         enable_session_reuse=payload.get("enable_session_reuse", True),
     )
