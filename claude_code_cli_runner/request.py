@@ -86,6 +86,19 @@ class ReusableContext:
     content: List[ContentBlock] = field(default_factory=list)
 
 
+# --- harness selection --------------------------------------------------------
+# The HARNESS is the agent CLI the runner drives. Location (below) says WHERE it
+# runs; harness says WHAT is launched. Both are config, not separate code paths.
+
+HARNESS_CLAUDE_CLI = "claude_cli"
+HARNESS_OPENCODE_CLI = "opencode_cli"
+
+KNOWN_HARNESSES = (
+    HARNESS_CLAUDE_CLI,
+    HARNESS_OPENCODE_CLI,
+)
+
+
 # --- execution location config ----------------------------------------------
 
 LOCATION_LOCAL_SUBPROCESS = "local_subprocess"
@@ -180,7 +193,9 @@ class RunRequest:
     session_id: Optional[str] = None
     resume_session: bool = False
     extra_cli_flags: List[str] = field(default_factory=list)
+    harness: str = HARNESS_CLAUDE_CLI
     claude_command: str = "claude"
+    opencode_command: str = "opencode"
     live_log_path: Optional[str] = None
     control_channel_path: Optional[str] = None
     run_status_path: Optional[str] = None
@@ -199,3 +214,33 @@ class RunRequest:
             )
         if not isinstance(self.input_content, list):
             raise ValueError("input_content must be a list of content blocks")
+        if self.harness not in KNOWN_HARNESSES:
+            raise ValueError(
+                "unknown harness %r; expected one of %s"
+                % (self.harness, ", ".join(KNOWN_HARNESSES))
+            )
+        if self.harness == HARNESS_OPENCODE_CLI:
+            # The opencode CLI has no stdio permission-escalation protocol, so an
+            # operator-gated permission posture cannot be honoured — refuse loudly
+            # rather than run ungated.
+            if self.permission_mode:
+                raise ValueError(
+                    "the opencode_cli harness does not support permission_mode "
+                    "(no operator permission protocol); use "
+                    "dangerously_skip_permissions for a full-auto run"
+                )
+            # A caller-chosen CREATE id is a claude-specific contract (opencode
+            # mints its own session ids); resuming a known opencode session works.
+            if self.session_id and not self.resume_session:
+                raise ValueError(
+                    "the opencode_cli harness cannot CREATE a session with a "
+                    "caller-chosen id; set resume_session=True with an existing "
+                    "opencode session id, or omit session_id"
+                )
+            for block in self.input_content:
+                if getattr(block, "block_type", None) != BLOCK_TYPE_TEXT:
+                    raise ValueError(
+                        "the opencode_cli harness currently supports text input "
+                        "content only (got a %r block)"
+                        % getattr(block, "block_type", type(block).__name__)
+                    )

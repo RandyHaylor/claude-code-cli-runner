@@ -15,6 +15,7 @@ import shlex
 import subprocess
 
 from .request import (
+    HARNESS_OPENCODE_CLI,
     LOCATION_LOCAL_SUBPROCESS,
     LOCATION_REMOTE_HOST,
     LOCATION_VM_OVER_SSH,
@@ -73,6 +74,40 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
             argv += ["--session-id", run_request.session_id]
     argv.extend(run_request.extra_cli_flags)
     return argv
+
+
+def build_base_opencode_argv(run_request: RunRequest) -> "list[str]":
+    """The streaming opencode argv (no prompt positional).
+
+    ``opencode run --format json`` emits raw JSON events; the prompt is
+    delivered over stdin (verified: opencode reads the message from stdin when
+    no positional is given), so it never lands on a process table — the same
+    privacy contract as the claude argv.
+    """
+    argv = [
+        run_request.opencode_command,
+        "run",
+        "--format",
+        "json",
+    ]
+    if run_request.dangerously_skip_permissions:
+        # opencode's full-auto switch: auto-approve anything not explicitly
+        # denied. The sandbox/VM boundary is the safety layer, exactly as with
+        # claude --dangerously-skip-permissions.
+        argv.append("--auto")
+    if run_request.model:
+        argv += ["--model", run_request.model]
+    if run_request.session_id and run_request.resume_session:
+        argv += ["--session", run_request.session_id]
+    argv.extend(run_request.extra_cli_flags)
+    return argv
+
+
+def build_base_harness_argv(run_request: RunRequest) -> "list[str]":
+    """The ONLY place the harness choice branches into an argv builder."""
+    if run_request.harness == HARNESS_OPENCODE_CLI:
+        return build_base_opencode_argv(run_request)
+    return build_base_claude_argv(run_request)
 
 
 def build_priming_claude_argv(
@@ -167,7 +202,7 @@ def build_ssh_argv(run_request: RunRequest) -> "list[str]":
         raise ValueError("ssh execution_location requires an ssh config")
     host = resolve_ssh_host(ssh_config)
 
-    remote_argv = build_base_claude_argv(run_request)
+    remote_argv = build_base_harness_argv(run_request)
     remote_command = " ".join(shlex.quote(part) for part in remote_argv)
     if ssh_config.remote_workspace_directory:
         remote_command = (
@@ -200,7 +235,7 @@ def build_command_for(run_request: RunRequest) -> "list[str]":
     """
     location = run_request.execution_location
     if location == LOCATION_LOCAL_SUBPROCESS:
-        return build_base_claude_argv(run_request)
+        return build_base_harness_argv(run_request)
     if location in (LOCATION_VM_OVER_SSH, LOCATION_REMOTE_HOST):
         return build_ssh_argv(run_request)
     raise ValueError("unknown execution_location %r" % location)
