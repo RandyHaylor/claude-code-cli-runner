@@ -89,6 +89,11 @@ def build_base_opencode_argv(run_request: RunRequest) -> "list[str]":
         "run",
         "--format",
         "json",
+        # Emit thinking/reasoning blocks as stream events. Some local models
+        # (observed: ollama gemma4:e4b) put their ENTIRE answer in a reasoning
+        # part and stop; without this flag opencode emits no event for it and
+        # the run looks blank.
+        "--thinking",
     ]
     if run_request.dangerously_skip_permissions:
         # opencode's full-auto switch: auto-approve anything not explicitly

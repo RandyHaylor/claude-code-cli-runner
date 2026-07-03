@@ -56,6 +56,9 @@ def test_opencode_argv_carries_run_json_model_and_auto(tmp_path):
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "ollama/gemma4:e4b"
     assert "--auto" in argv
+    # reasoning/thinking blocks must reach the event stream (some local models
+    # answer ONLY in reasoning).
+    assert "--thinking" in argv
     # the prompt is NEVER on argv
     assert "hello opencode stub" not in " ".join(argv)
 
@@ -153,6 +156,38 @@ def test_translator_intermediate_step_emits_usage_only():
         }
     )
     assert [chunk["type"] for chunk in chunks] == ["stream_event"]
+
+
+def test_translator_uses_reasoning_text_when_run_ends_with_no_final_text():
+    # Observed with ollama gemma4:e4b: the whole answer lands in a reasoning
+    # part and the step stops with NO text part. The reasoning text is then the
+    # only reply there is — it becomes the (flagged) result.
+    translator = OpencodeEventToClaudeChunkTranslator()
+    translator.translate(
+        {"type": "reasoning", "sessionID": "ses_r",
+         "part": {"type": "reasoning", "text": "the actual answer lives here"}}
+    )
+    chunks = translator.translate(
+        {"type": "step_finish", "sessionID": "ses_r",
+         "part": {"reason": "stop", "tokens": {"input": 5, "output": 2}}}
+    )
+    result_chunk = chunks[-1]
+    assert result_chunk["type"] == "result"
+    assert result_chunk["result"] == "the actual answer lives here"
+    assert result_chunk["result_text_source"] == "reasoning_only"
+
+
+def test_translator_prefers_final_text_over_reasoning():
+    translator = OpencodeEventToClaudeChunkTranslator()
+    translator.translate(
+        {"type": "reasoning", "part": {"type": "reasoning", "text": "working..."}}
+    )
+    translator.translate({"type": "text", "part": {"text": "final reply"}})
+    chunks = translator.translate(
+        {"type": "step_finish", "part": {"reason": "stop", "tokens": {}}}
+    )
+    assert chunks[-1]["result"] == "final reply"
+    assert "result_text_source" not in chunks[-1]
 
 
 def test_translator_passes_unknown_events_through():
