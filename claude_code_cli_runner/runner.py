@@ -47,6 +47,7 @@ from .live_files import (
     read_new_control_intents,
     run_status_path,
 )
+from .harness_activity_events import derive_harness_activity_event
 from .opencode_event_translation import OpencodeEventToClaudeChunkTranslator
 from .request import HARNESS_OPENCODE_CLI, RunRequest, TextBlock
 from .result import RunResult
@@ -296,7 +297,11 @@ def _stream_one_run(
         with open(log_path, "a", encoding="utf-8") as note_handle:
             for note in startup_notes:
                 note_handle.write(
-                    json.dumps({"received_at": time.time(), "runner_note": note}) + "\n"
+                    json.dumps({
+                        "received_at": time.time(),
+                        "activity": {"kind": "runner_note", "text": note},
+                        "runner_note": note,
+                    }) + "\n"
                 )
             note_handle.flush()
             os.fsync(note_handle.fileno())
@@ -490,6 +495,11 @@ def _stream_one_run(
     def record_chunk_and_update_run_bookkeeping(chunk) -> None:
         nonlocal result_seen
         record = {"received_at": time.time(), "chunk": chunk}
+        # STANDARD activity facet (raw-780/781): renderers read ONLY this,
+        # harness-agnostic; the raw chunk stays alongside for troubleshooting.
+        activity = derive_harness_activity_event(chunk)
+        if activity is not None:
+            record["activity"] = activity
         render_text_from_chunk(chunk)
         accumulate_token_usage_from_chunk(chunk)
         if isinstance(chunk, dict) and chunk.get("type") == "result":
@@ -557,6 +567,11 @@ def _stream_one_run(
             json.dumps(
                 {
                     "received_at": time.time(),
+                    "activity": {
+                        "kind": "permission_request",
+                        "request_id": request_id,
+                        "tool_name": request.get("tool_name"),
+                    },
                     "permission_request": {
                         "request_id": request_id,
                         "tool_name": request.get("tool_name"),
@@ -619,6 +634,11 @@ def _stream_one_run(
             json.dumps(
                 {
                     "received_at": time.time(),
+                    "activity": {
+                        "kind": "permission_resolved",
+                        "request_id": request_id,
+                        "behavior": behavior,
+                    },
                     "permission_resolved": {
                         "request_id": request_id,
                         "behavior": behavior,
@@ -699,6 +719,10 @@ def _stream_one_run(
                 log_handle.write(
                     json.dumps({
                         "received_at": time.time(),
+                        "activity": {
+                            "kind": "runner_note",
+                            "text": "halted due to token limit for task reached",
+                        },
                         "runner_token_limit_halt": {
                             "task_token_limit": run_request.task_token_limit,
                             "token_usage": dict(cumulative_token_usage),
@@ -720,6 +744,10 @@ def _stream_one_run(
             log_handle.write(
                 json.dumps({
                     "received_at": time.time(),
+                    "activity": {
+                        "kind": "runner_note",
+                        "text": "runner killed the harness process: idle budget exceeded",
+                    },
                     "runner_idle_kill": {
                         "idle_kill_seconds": run_request.idle_kill_seconds,
                         "note": "runner killed the harness process: no stream "
