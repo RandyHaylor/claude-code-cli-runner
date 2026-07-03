@@ -48,7 +48,6 @@ class OpencodeEventToClaudeChunkTranslator:
 
     def __init__(self) -> None:
         self._collected_assistant_text_parts: "list[str]" = []
-        self._collected_reasoning_text_parts: "list[str]" = []
         self.last_seen_session_id: "str | None" = None
 
     def translate(self, opencode_event: dict) -> "list[dict]":
@@ -74,12 +73,12 @@ class OpencodeEventToClaudeChunkTranslator:
             ]
 
         if event_type == "reasoning":
-            reasoning_text = part.get("text")
-            if not isinstance(reasoning_text, str):
-                return [opencode_event]
-            self._collected_reasoning_text_parts.append(reasoning_text)
-            # Logged (visible to the operator) but NOT rendered as assistant
-            # text — reasoning is the model's working, not its reply.
+            # Thinking/reasoning is LOG-ONLY (architect ruling raw-770): it is
+            # never treated as the reply, never fed to tool-call or envelope
+            # handling — it passes through so the live log records it verbatim
+            # for troubleshooting. Verified against the deployed gemma4:e4b:
+            # ollama already separates reasoning from content on both its
+            # native and OpenAI-compat endpoints.
             return [opencode_event]
 
         if event_type == "step_finish":
@@ -100,15 +99,6 @@ class OpencodeEventToClaudeChunkTranslator:
                     "session_id": self.last_seen_session_id,
                     "harness": "opencode_cli",
                 }
-                if not final_text and self._collected_reasoning_text_parts:
-                    # Some local models (observed: ollama gemma4:e4b) put their
-                    # ENTIRE answer in reasoning and stop. The model's own
-                    # reasoning text is then the only reply there is — surface
-                    # it as the result (flagged) rather than returning a blank.
-                    result_chunk["result"] = "".join(
-                        self._collected_reasoning_text_parts
-                    )
-                    result_chunk["result_text_source"] = "reasoning_only"
                 return [usage_chunk, result_chunk]
             return [usage_chunk]
 

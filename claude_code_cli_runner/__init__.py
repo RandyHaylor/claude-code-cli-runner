@@ -67,4 +67,4 @@ __all__ = [
 # The runner code version reported by GET /version — bumped on every
 # behavior-affecting change so callers can enforce a required version
 # (no silent deployment skew).
-RUNNER_CODE_VERSION = "2026.07.02.3"
+RUNNER_CODE_VERSION = "2026.07.03.1"
