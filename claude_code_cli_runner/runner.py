@@ -31,6 +31,11 @@ from .content import (
     list_produced_artifacts,
     snapshot_workspace_files,
 )
+from .keep_alive_registry import (
+    clear_keep_alive_record,
+    record_keep_alive_signal,
+    seconds_since_last_keep_alive,
+)
 from .live_files import (
     CONTROL_END_AND_RETURN,
     CONTROL_PAUSE,
@@ -39,6 +44,7 @@ from .live_files import (
     CONTROL_SEND_COMMAND,
     RUN_STATE_AWAITING_PERMISSION,
     RUN_STATE_IDLE_KILLED,
+    RUN_STATE_KEEP_ALIVE_LOST_KILLED,
     RUN_STATE_OPERATOR_ENDED,
     RUN_STATE_TOKEN_LIMIT_HALTED,
     RUN_STATE_PAUSED,
@@ -424,6 +430,42 @@ def _stream_one_run(
             daemon=True,
         ).start()
 
+    # KEEP-ALIVE FAIL-SAFE (raw-830): the orchestrator relays its heartbeat to
+    # this runner (~every 10s) for the task WHILE IT IS IN PROGRESS. When the
+    # relayed heartbeat stops for keep_alive_timeout_seconds — orchestrator
+    # dead, task wiped, or task no longer in progress — the run is AGGRESSIVELY
+    # killed (straight SIGKILL of the process group), so an orphaned harness
+    # can never keep consuming resources.
+    keep_alive_shared_state = {"keep_alive_killed": False}
+    keep_alive_task_id = run_request.keep_alive_task_id or os.path.basename(
+        workspace_directory.rstrip("/")
+    )
+
+    def watch_for_lost_keep_alive_and_kill():
+        timeout_seconds = float(run_request.keep_alive_timeout_seconds)
+        while not idle_watchdog_shared_state["run_finished"]:
+            time.sleep(2.0)
+            if idle_watchdog_shared_state["run_finished"]:
+                return
+            signal_age = seconds_since_last_keep_alive(keep_alive_task_id)
+            if signal_age is not None and signal_age > timeout_seconds:
+                keep_alive_shared_state["keep_alive_killed"] = True
+                _reflect(status_path, RUN_STATE_KEEP_ALIVE_LOST_KILLED)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    process.kill()
+                return
+
+    if run_request.keep_alive_expected:
+        # The dispatch itself counts as the first signal.
+        record_keep_alive_signal(keep_alive_task_id)
+        threading.Thread(
+            target=watch_for_lost_keep_alive_and_kill,
+            name="runner-keep-alive-watchdog",
+            daemon=True,
+        ).start()
+
     # TOKEN ACCOUNTING (always collected + reported) and the HARD token-limit
     # halt (the runner's duty; the caller only supplies task_token_limit).
     # counted_tokens = input + output + cache_creation; cache READS excluded.
@@ -744,6 +786,25 @@ def _stream_one_run(
                 break
     finally:
         idle_watchdog_shared_state["run_finished"] = True
+        if run_request.keep_alive_expected:
+            clear_keep_alive_record(keep_alive_task_id)
+        if keep_alive_shared_state["keep_alive_killed"]:
+            log_handle.write(
+                json.dumps({
+                    "received_at": time.time(),
+                    "activity": {
+                        "kind": "runner_note",
+                        "text": "runner killed the harness process: the "
+                                "orchestrator's keep-alive heartbeat stopped",
+                    },
+                    "runner_keep_alive_lost_kill": {
+                        "keep_alive_timeout_seconds":
+                            run_request.keep_alive_timeout_seconds,
+                        "note": "no relayed keep-alive heartbeat within the "
+                                "timeout; run treated as orphaned and killed",
+                    },
+                }) + "\n"
+            )
         if idle_watchdog_shared_state["idle_killed"]:
             # Make the kill visible in the teed live log, not just the sidecar.
             log_handle.write(
@@ -793,6 +854,14 @@ def _stream_one_run(
             captured_harness_stderr = (
                 "runner killed the harness process: no stream activity within "
                 "the idle budget (%.0fs)" % float(run_request.idle_kill_seconds)
+            )
+    if keep_alive_shared_state["keep_alive_killed"]:
+        final_run_state = RUN_STATE_KEEP_ALIVE_LOST_KILLED
+        if not captured_harness_stderr:
+            captured_harness_stderr = (
+                "runner killed the harness process: no keep-alive heartbeat "
+                "relayed within %.0fs — run treated as orphaned"
+                % float(run_request.keep_alive_timeout_seconds)
             )
     if token_limit_halted:
         final_run_state = RUN_STATE_TOKEN_LIMIT_HALTED

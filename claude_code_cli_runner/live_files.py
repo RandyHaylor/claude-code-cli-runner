@@ -43,6 +43,10 @@ RUN_STATE_IDLE_KILLED = "idle_killed"
 # The runner itself HALTED the harness process because the run's cumulative
 # counted tokens reached the caller's task_token_limit policy value.
 RUN_STATE_TOKEN_LIMIT_HALTED = "token_limit_halted"
+# raw-830: the run was aggressively killed because the orchestrator's relayed
+# keep-alive heartbeat stopped arriving (orchestrator dead, task wiped, or the
+# task is no longer in progress) — the fail-safe against orphaned runs.
+RUN_STATE_KEEP_ALIVE_LOST_KILLED = "keep_alive_lost_killed"
 
 # Control intents an external reader may write into the control channel.
 CONTROL_PAUSE = "pause"

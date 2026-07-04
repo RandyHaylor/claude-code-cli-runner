@@ -202,6 +202,14 @@ class RunRequest:
     timeout_seconds: Optional[float] = None
     idle_kill_seconds: Optional[float] = None
     task_token_limit: Optional[int] = None
+    # Keep-alive fail-safe (raw-830): when True, the caller (Unharness) relays
+    # its heartbeat to this runner every ~10s for the task WHILE IT IS
+    # IN PROGRESS; if no signal arrives within keep_alive_timeout_seconds the
+    # runner AGGRESSIVELY kills the harness process group. Off by default so
+    # library/CLI/test runs (no orchestrator sending beats) are unaffected.
+    keep_alive_expected: bool = False
+    keep_alive_timeout_seconds: float = 60.0
+    keep_alive_task_id: Optional[str] = None
     run_environment_variables: dict = field(default_factory=dict)
     reusable_context: Optional[ReusableContext] = None
     enable_session_reuse: bool = True

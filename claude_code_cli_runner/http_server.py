@@ -51,6 +51,7 @@ from .request import (
     SshConfig,
     TextBlock,
 )
+from . import keep_alive_registry
 from .live_files import append_control_intent
 from .runner import run_claude_code_task
 from .auth_status import check_claude_auth_status
@@ -106,6 +107,9 @@ def request_from_json(payload: dict) -> RunRequest:
         session_id=payload.get("session_id"),
         resume_session=payload.get("resume_session", False),
         extra_cli_flags=payload.get("extra_cli_flags", []),
+        keep_alive_expected=payload.get("keep_alive_expected", False),
+        keep_alive_timeout_seconds=payload.get("keep_alive_timeout_seconds", 60.0),
+        keep_alive_task_id=payload.get("keep_alive_task_id"),
         harness=payload.get("harness", "claude_cli"),
         claude_command=payload.get("claude_command", "claude"),
         opencode_command=payload.get("opencode_command", "opencode"),
@@ -184,6 +188,21 @@ def build_streaming_http_server(
                 return
             if self.path == "/control":
                 self._handle_control()
+                return
+            if self.path.startswith("/keep-alive/"):
+                # raw-830: the orchestrator's heartbeat, relayed for one
+                # in-progress task. Tiny, non-blocking, never fails the caller.
+                task_id = self.path[len("/keep-alive/"):]
+                if not task_id:
+                    self._error(404, "missing task id")
+                    return
+                keep_alive_registry.record_keep_alive_signal(task_id)
+                body = json.dumps({"keep_alive_recorded": task_id}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if self.path != "/run":
                 self._error(404, "not found")
