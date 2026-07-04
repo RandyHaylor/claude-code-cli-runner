@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -322,6 +323,10 @@ def _stream_one_run(
         text=True,
         bufsize=1,
         env=harness_environment,
+        # OWN PROCESS GROUP (raw-821): the harness and every subprocess it
+        # spawns live in one killable group, so terminating a run can never
+        # leave stray harness children churning after the runner is gone.
+        start_new_session=True,
     )
 
     def write_stream_json_message(message: dict) -> None:
@@ -842,7 +847,12 @@ def read_run_state_value(status_path: str):
 
 
 def _terminate_process(process) -> None:
-    """Best-effort terminate-then-kill a still-running process and reap it."""
+    """Best-effort terminate-then-kill a still-running harness and reap it.
+
+    Signals the WHOLE PROCESS GROUP (the harness is spawned with
+    ``start_new_session=True``), so tool subprocesses and any children the
+    harness forked die with it — a terminated run must never leave stray
+    harness processes running (raw-821)."""
     if process.poll() is not None:
         return
     try:
@@ -851,11 +861,17 @@ def _terminate_process(process) -> None:
                 process.stdin.close()
             except (BrokenPipeError, OSError):
                 pass
-        process.terminate()
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                process.kill()
             process.wait(timeout=5)
     except (OSError, ValueError):
         pass
