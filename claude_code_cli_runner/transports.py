@@ -15,6 +15,7 @@ import shlex
 import subprocess
 
 from .request import (
+    HARNESS_CLAUDE_CLI,
     HARNESS_OPENCODE_CLI,
     LOCATION_LOCAL_SUBPROCESS,
     LOCATION_REMOTE_HOST,
@@ -23,6 +24,9 @@ from .request import (
 )
 from .runner_provided_mcp_registry import (
     split_assigned_tools_into_builtins_and_runner_mcps,
+)
+from .harness_tool_name_translation import (
+    translate_generic_tool_names_to_harness_specific,
 )
 
 
@@ -88,12 +92,17 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         run_request.restrict_to_assigned_tools_as_whitelist
         and run_request.assigned_tool_list is not None
     ):
-        builtin_tool_names, _runner_mcp_names = (
+        generic_builtin_tool_names, _runner_mcp_names = (
             split_assigned_tools_into_builtins_and_runner_mcps(
                 run_request.assigned_tool_list
             )
         )
-        argv += ["--tools", ",".join(builtin_tool_names)]
+        # The assigned names are GENERIC (Unharness-level); convert to claude-specific
+        # names before emitting --tools (the runner owns this harness translation).
+        claude_specific_tool_names = translate_generic_tool_names_to_harness_specific(
+            generic_builtin_tool_names, HARNESS_CLAUDE_CLI
+        )
+        argv += ["--tools", ",".join(claude_specific_tool_names)]
     argv.extend(run_request.extra_cli_flags)
     return argv
 

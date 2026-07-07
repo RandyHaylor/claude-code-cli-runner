@@ -1,0 +1,23 @@
+{
+  "_description": "Generic -> harness-specific tool-name translation. Unharness assigns tools by GENERIC name; the runner converts each generic name to the harness-specific name before emitting the harness's tool-restriction flag. The generic vocabulary intentionally reuses claude's tool names (so claude_cli is an identity map) and stays small: only the tools we actually assign are listed. A generic name absent from a harness map falls back to identity (passed through unchanged) with a runner warning.",
+  "generic_tool_vocabulary": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+  "harness_tool_name_by_generic_name": {
+    "claude_cli": {
+      "Read": "Read",
+      "Write": "Write",
+      "Edit": "Edit",
+      "Bash": "Bash",
+      "Grep": "Grep",
+      "Glob": "Glob"
+    },
+    "opencode_cli": {
+      "_unverified": "opencode has no tool-restriction flag wired in the runner yet, and these opencode tool names are UNVERIFIED placeholders (currently identity). Confirm the real opencode tool names AND its restriction mechanism before relying on this map.",
+      "Read": "Read",
+      "Write": "Write",
+      "Edit": "Edit",
+      "Bash": "Bash",
+      "Grep": "Grep",
+      "Glob": "Glob"
+    }
+  }
+}
