@@ -21,6 +21,9 @@ from .request import (
     LOCATION_VM_OVER_SSH,
     RunRequest,
 )
+from .runner_provided_mcp_registry import (
+    split_assigned_tools_into_builtins_and_runner_mcps,
+)
 
 
 def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
@@ -72,6 +75,25 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
             argv += ["--resume", run_request.session_id]
         else:
             argv += ["--session-id", run_request.session_id]
+    # Per-session tool restriction. When the session's assigned tool list is enforced
+    # as an exclusive whitelist, restrict the harness to ONLY the assigned BUILT-IN
+    # tools via --tools (the runner-provided MCP names are held out — they are enabled
+    # through the runner's MCP-client layer, not the harness tool flag; and --tools
+    # governs built-ins only, per the CLI docs). Verified on the installed CLI:
+    # `--tools ""` disables all built-ins, `--tools "Bash,Edit,Read"` limits to those.
+    # (This is distinct from --allowedTools, which only pre-approves.) Names are
+    # comma-joined into one argument so the flag's greedy nargs cannot swallow later
+    # flags. Not restricting => emit no --tools (harness default toolset).
+    if (
+        run_request.restrict_to_assigned_tools_as_whitelist
+        and run_request.assigned_tool_list is not None
+    ):
+        builtin_tool_names, _runner_mcp_names = (
+            split_assigned_tools_into_builtins_and_runner_mcps(
+                run_request.assigned_tool_list
+            )
+        )
+        argv += ["--tools", ",".join(builtin_tool_names)]
     argv.extend(run_request.extra_cli_flags)
     return argv
 

@@ -119,6 +119,10 @@ def request_from_json(payload: dict) -> RunRequest:
         run_environment_variables=payload.get("run_environment_variables") or {},
         reusable_context=reusable_context,
         enable_session_reuse=payload.get("enable_session_reuse", True),
+        assigned_tool_list=payload.get("assigned_tool_list"),
+        restrict_to_assigned_tools_as_whitelist=payload.get(
+            "restrict_to_assigned_tools_as_whitelist", False
+        ),
     )
 
 

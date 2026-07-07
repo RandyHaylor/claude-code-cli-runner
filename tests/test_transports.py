@@ -171,3 +171,74 @@ def test_resume_session_continues_existing_session():
     )
     assert argv[argv.index("--resume") + 1] == "sess-123"
     assert "--session-id" not in argv
+
+
+def test_no_assigned_tool_list_omits_tools_flag():
+    # None assigned list => leave the default toolset unchanged (no --tools emitted).
+    argv = transports.build_base_claude_argv(
+        RunRequest(input_content=[], workspace_directory="/tmp/ws")
+    )
+    assert "--tools" not in argv
+
+
+def test_assigned_tools_without_whitelist_do_not_restrict():
+    # A list present but NOT enforced as a whitelist => built-ins are not restricted,
+    # so no --tools is emitted (the harness keeps its default toolset).
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[], workspace_directory="/tmp/ws",
+            assigned_tool_list=["Read"],
+            restrict_to_assigned_tools_as_whitelist=False,
+        )
+    )
+    assert "--tools" not in argv
+
+
+def test_whitelist_with_empty_builtins_disables_all_local_tools():
+    # Whitelist true + no built-ins => a prose-only, no-local-tools session: --tools ""
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[], workspace_directory="/tmp/ws",
+            assigned_tool_list=[],
+            restrict_to_assigned_tools_as_whitelist=True,
+        )
+    )
+    assert argv[argv.index("--tools") + 1] == ""
+
+
+def test_whitelist_restricts_to_assigned_builtin_tools():
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[], workspace_directory="/tmp/ws",
+            assigned_tool_list=["Read", "Grep"],
+            restrict_to_assigned_tools_as_whitelist=True,
+        )
+    )
+    assert argv[argv.index("--tools") + 1] == "Read,Grep"
+
+
+def test_whitelist_holds_runner_mcp_names_out_of_the_builtin_tool_flag():
+    # A runner-provided MCP name (unharness-api) is NOT a harness built-in, so it must
+    # NOT be passed to --tools; only the built-in tools are (the MCP is enabled via the
+    # runner's MCP-client layer instead).
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[], workspace_directory="/tmp/ws",
+            assigned_tool_list=["Read", "unharness-api"],
+            restrict_to_assigned_tools_as_whitelist=True,
+        )
+    )
+    assert argv[argv.index("--tools") + 1] == "Read"
+
+
+def test_api_only_posture_is_no_builtins_plus_runner_mcp():
+    # The API-only agent: whitelist true, only a runner-MCP assigned => zero built-in
+    # tools (--tools "") while the runner-MCP is held out for the MCP layer.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[], workspace_directory="/tmp/ws",
+            assigned_tool_list=["unharness-api"],
+            restrict_to_assigned_tools_as_whitelist=True,
+        )
+    )
+    assert argv[argv.index("--tools") + 1] == ""

@@ -213,6 +213,26 @@ class RunRequest:
     run_environment_variables: dict = field(default_factory=dict)
     reusable_context: Optional[ReusableContext] = None
     enable_session_reuse: bool = True
+    # Per-session tool posture — one GENERIC tool list plus a whitelist bool
+    # (permission_mode above is the third, orthogonal axis: whether tools may be
+    # USED). The list names tools generically: harness BUILT-INS (Read/Bash/…) AND
+    # runner-provided MCP names (e.g. "unharness-api"). The runner interprets which
+    # entries are runner-MCPs via KNOWN_RUNNER_PROVIDED_MCP_NAMES and holds those
+    # out of the harness tool flag.
+    #   assigned_tool_list:
+    #     None => UNSET; leave the harness's default toolset unchanged (prior
+    #             callers are unaffected).
+    #     [..] => the tools assigned to this session (built-ins + runner-MCP names).
+    #   restrict_to_assigned_tools_as_whitelist:
+    #     True  => the session is RESTRICTED to ONLY the assigned built-in tools —
+    #              every unlisted tool is disabled (an empty built-in set => NO local
+    #              tools, the API-only/prose posture).
+    #     False => built-ins are NOT restricted (harness default); any runner-MCPs in
+    #              the list are still enabled.
+    # (Runner-MCP ENABLEMENT itself is a later build step — the runner's generic
+    # MCP-client layer; here the names are parsed/held-out so the tool flag is right.)
+    assigned_tool_list: Optional[List[str]] = None
+    restrict_to_assigned_tools_as_whitelist: bool = False
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:
