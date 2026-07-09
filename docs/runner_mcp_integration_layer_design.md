@@ -1,9 +1,11 @@
 # Runner MCP integration layer — design
 
-Status: **DESIGN ONLY. Not built.** This documents the layer that lets the runner act
-as a generic MCP client over any harness it drives. It is gated behind a precondition
-(see "Precondition" below): the standalone Unharness MCP server must be fully working
-and tested first.
+Status: **BUILT (first slice) — see `unharness_tool_call_detection.py`,
+`runner_provided_mcp_registry.py` (digestible→MCP translation), and
+`unharness_mcp_tool_executor.py`, wired into `runner.py`'s stop point.** The
+precondition was met first: the standalone Unharness MCP server is live-verified
+(read + write) against a running Unharness. This document remains the design
+reference for the layer.
 
 ## Purpose
 

@@ -233,6 +233,11 @@ class RunRequest:
     # MCP-client layer; here the names are parsed/held-out so the tool flag is right.)
     assigned_tool_list: Optional[List[str]] = None
     restrict_to_assigned_tools_as_whitelist: bool = False
+    # Test seam for the runner-mediated MCP tool loop: a callable
+    # ``(mcp_tool_name, tool_arguments, run_environment_variables) -> (text, is_error)``
+    # standing in for the real stdio MCP executor. None (the default, and the only
+    # value reachable over the HTTP wire) => the real executor is used.
+    unharness_tool_call_executor: Optional[object] = None
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:

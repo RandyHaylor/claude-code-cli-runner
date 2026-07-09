@@ -37,10 +37,18 @@ ARTIFACT_CONTENT = os.environ.get("STUB_ARTIFACT_CONTENT", "stub artifact")
 # permission control protocol (raw-538/nd-251).
 REQUEST_PERMISSION = os.environ.get("STUB_REQUEST_PERMISSION", "0") == "1"
 PERMISSION_REQUEST_ID = "stub-perm-1"
+# When set, the stub plays a TOOL-CALL TURN: turn 1 emits assistant text containing
+# this string (a fenced unharness-tool block) + a result event, then WAITS for the
+# runner to inject a user message (the tool result) and answers with a final turn
+# echoing what it received — exercising the runner-mediated MCP tool loop.
+TOOL_CALL_TURN_TEXT = os.environ.get("STUB_TOOL_CALL_TURN_TEXT")
 
 # Shared state for the captured permission decision (set by the stdin thread).
 _permission_decision_seen = threading.Event()
 _permission_decision = {}
+# Shared state for a runner-injected user message (the tool-result turn input).
+_injected_user_message_seen = threading.Event()
+_injected_user_message_text = {}
 
 
 def emit(obj):
@@ -95,6 +103,19 @@ def stdin_echo_loop():
             )
             _permission_decision_seen.set()
             continue
+        if message.get("type") == "user":
+            # The INITIAL prompt is also a stdin user message — in tool-call-turn
+            # mode only a SUBSEQUENT user message is the runner-injected tool
+            # result, so skip the first one.
+            _injected_user_message_text["seen_count"] = (
+                _injected_user_message_text.get("seen_count", 0) + 1
+            )
+            if not TOOL_CALL_TURN_TEXT or _injected_user_message_text["seen_count"] > 1:
+                content = (message.get("message") or {}).get("content")
+                _injected_user_message_text["text"] = (
+                    content if isinstance(content, str) else json.dumps(content)
+                )
+                _injected_user_message_seen.set()
         emit({"type": "injected_echo", "received": message})
 
 
@@ -146,6 +167,40 @@ def main():
         emit(
             {"type": "result", "subtype": "success", "is_error": False, "result": decision_text}
         )
+        return
+
+    if TOOL_CALL_TURN_TEXT:
+        # Turn 1: the agent "emits a tool call" (text carrying the fenced block) and
+        # STOPS (a result event). The runner should withhold this stop, execute the
+        # call, and inject the result as a user message; the stub then answers with
+        # a final turn reporting what it received.
+        emit(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": TOOL_CALL_TURN_TEXT}],
+                },
+            }
+        )
+        time.sleep(LINE_DELAY)
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "result": "turn-1 tool call emitted"})
+        received = _injected_user_message_seen.wait(timeout=10)
+        final_text = (
+            "TOOL_RESULT_RECEIVED::" + _injected_user_message_text.get("text", "")
+            if received
+            else "TOOL_RESULT_NEVER_ARRIVED"
+        )
+        emit(
+            {
+                "type": "assistant",
+                "message": {"role": "assistant",
+                            "content": [{"type": "text", "text": final_text}]},
+            }
+        )
+        time.sleep(LINE_DELAY)
+        emit({"type": "result", "subtype": "success", "is_error": False, "result": final_text})
         return
 
     if RUN_FOREVER:

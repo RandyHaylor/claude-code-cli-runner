@@ -1,0 +1,19 @@
+{
+  "_description": "Digestible -> standard-MCP tool-name translation for the runner's MCP integration layer (SoT nd-473). Agents are prompted with the DIGESTIBLE names (left); the runner translates each detected call to the standard MCP tool name (right) before forwarding via tools/call. The unharness MCP server's names are already verbose and purpose-driven, so the seed map is identity; the layer exists so a simpler agent-facing surface (or a role-scoped subset) can be presented without touching the industry-standard server.",
+  "mcp_tool_name_by_digestible_name": {
+    "unharness-api": {
+      "read_dashboard_state": "read_dashboard_state",
+      "list_all_container_nodes": "list_all_container_nodes",
+      "read_one_node": "read_one_node",
+      "read_node_subtree": "read_node_subtree",
+      "read_project_deliverables": "read_project_deliverables",
+      "read_project_activity_log": "read_project_activity_log",
+      "read_task_live_log": "read_task_live_log",
+      "create_work_task_citing_ledger_entries": "create_work_task_citing_ledger_entries",
+      "abandon_task_so_flow_continues_without_it": "abandon_task_so_flow_continues_without_it",
+      "request_node_status_change": "request_node_status_change",
+      "request_node_title_change": "request_node_title_change",
+      "request_add_child_node": "request_add_child_node"
+    }
+  }
+}

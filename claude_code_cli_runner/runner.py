@@ -57,6 +57,16 @@ from .live_files import (
 from .harness_activity_events import derive_harness_activity_event
 from .opencode_event_translation import OpencodeEventToClaudeChunkTranslator
 from .request import HARNESS_OPENCODE_CLI, RunRequest, TextBlock
+from .runner_provided_mcp_registry import (
+    DigestibleToolNameUnknown,
+    split_assigned_tools_into_builtins_and_runner_mcps,
+    translate_digestible_tool_name_to_mcp,
+)
+from .unharness_tool_call_detection import (
+    compose_tool_result_turn_message_text,
+    detect_unharness_tool_calls_in_turn_text,
+)
+from .unharness_mcp_tool_executor import execute_unharness_mcp_tool_call
 from .result import RunResult
 from . import session_registry
 from . import claude_session_store
@@ -389,6 +399,30 @@ def _stream_one_run(
         if run_request.timeout_seconds
         else None
     )
+
+    # RUNNER-MEDIATED MCP TOOL LOOP (nd-472/nd-474/nd-476): enabled when the
+    # session's assigned tool list names a runner-provided MCP (e.g. "unharness-api").
+    # At each turn's stop (the `result` event — the existing stop, nd-476), the turn's
+    # text is checked for a detected tool call: if found the stop is WITHHELD, the
+    # call is translated (digestible -> standard MCP, nd-473) and executed, and the
+    # result is fed back over stdin as the next turn's input — the agent keeps going.
+    # A turn with no tool call ends the run exactly as before.
+    _, session_runner_provided_mcp_names = (
+        split_assigned_tools_into_builtins_and_runner_mcps(
+            run_request.assigned_tool_list or []
+        )
+    )
+    tool_loop_enabled = bool(session_runner_provided_mcp_names)
+    active_runner_mcp_name = (
+        session_runner_provided_mcp_names[0] if session_runner_provided_mcp_names else None
+    )
+    execute_tool_call = (
+        run_request.unharness_tool_call_executor or execute_unharness_mcp_tool_call
+    )
+    current_turn_text_start_index = 0
+    completed_tool_round_trips = 0
+    # Runaway guard — never silent: hitting the cap is logged as a runner note.
+    TOOL_ROUND_TRIP_MAXIMUM = 25
 
     # IDLE-KILL WATCHDOG (the runner's explicit duty: kill a run whose harness
     # streams nothing for idle_kill_seconds — the caller only dictates the
@@ -783,7 +817,68 @@ def _stream_one_run(
                 break
 
             if result_seen:
-                break
+                if not tool_loop_enabled:
+                    break
+                just_completed_turn_text = "".join(
+                    collected_text_parts[current_turn_text_start_index:]
+                )
+                detected_tool_calls = detect_unharness_tool_calls_in_turn_text(
+                    just_completed_turn_text
+                )
+                if not detected_tool_calls:
+                    break  # a genuine final message: the stop propagates as before
+                if completed_tool_round_trips >= TOOL_ROUND_TRIP_MAXIMUM:
+                    log_handle.write(json.dumps({
+                        "received_at": time.time(),
+                        "activity": {
+                            "kind": "runner_note",
+                            "text": "unharness tool round-trip maximum (%d) reached; "
+                                    "ending the run" % TOOL_ROUND_TRIP_MAXIMUM,
+                        },
+                    }) + "\n")
+                    log_handle.flush()
+                    os.fsync(log_handle.fileno())
+                    break
+                # WITHHOLD the stop: execute each detected call, feed the results
+                # back as the next turn's input, and keep the agent going.
+                tool_result_message_texts = []
+                for detected_call in detected_tool_calls:
+                    digestible_tool_name = detected_call["tool"]
+                    try:
+                        mcp_tool_name = translate_digestible_tool_name_to_mcp(
+                            active_runner_mcp_name, digestible_tool_name
+                        )
+                        result_text, tool_call_errored = execute_tool_call(
+                            mcp_tool_name,
+                            detected_call["arguments"],
+                            run_request.run_environment_variables,
+                        )
+                    except DigestibleToolNameUnknown as unknown_tool:
+                        result_text, tool_call_errored = str(unknown_tool), True
+                    tool_result_message_texts.append(
+                        compose_tool_result_turn_message_text(
+                            digestible_tool_name, result_text, tool_call_errored
+                        )
+                    )
+                    log_handle.write(json.dumps({
+                        "received_at": time.time(),
+                        "activity": {
+                            "kind": "runner_note",
+                            "text": "executed unharness tool call %r (error=%s); "
+                                    "stop withheld, result fed back"
+                                    % (digestible_tool_name, tool_call_errored),
+                        },
+                    }) + "\n")
+                    log_handle.flush()
+                    os.fsync(log_handle.fileno())
+                write_stream_json_message(
+                    build_injected_user_message("\n\n".join(tool_result_message_texts))
+                )
+                completed_tool_round_trips += 1
+                result_seen = False
+                final_result_event = None
+                current_turn_text_start_index = len(collected_text_parts)
+                continue
     finally:
         idle_watchdog_shared_state["run_finished"] = True
         if run_request.keep_alive_expected:
