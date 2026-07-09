@@ -61,6 +61,16 @@ def test_detection_finds_multiple_calls_in_order():
 
 def test_translation_is_identity_for_known_names_and_raises_for_unknown():
     assert translate_digestible_tool_name_to_mcp("unharness-api", "read_one_node") == "read_one_node"
+    # The node-building tools translate identity too (nd-473 identity seed).
+    for node_building_tool in (
+        "create_child_node_under_parent",
+        "set_node_dependency",
+        "release_node_to_pending",
+    ):
+        assert (
+            translate_digestible_tool_name_to_mcp("unharness-api", node_building_tool)
+            == node_building_tool
+        )
     try:
         translate_digestible_tool_name_to_mcp("unharness-api", "no_such_tool")
         raise AssertionError("expected DigestibleToolNameUnknown")
@@ -72,6 +82,11 @@ def test_digestible_vocabulary_lists_the_unharness_tools():
     names = list_digestible_tool_names("unharness-api")
     assert "read_one_node" in names
     assert "abandon_task_so_flow_continues_without_it" in names
+    # The three node-building tools are in the vocabulary, so they flow into
+    # compose_unharness_tool_usage_instructions automatically (prompt cannot drift).
+    assert "create_child_node_under_parent" in names
+    assert "set_node_dependency" in names
+    assert "release_node_to_pending" in names
 
 
 def test_result_message_composition_covers_empty_and_error():
