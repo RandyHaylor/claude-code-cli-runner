@@ -66,6 +66,7 @@ def test_translation_is_identity_for_known_names_and_raises_for_unknown():
         "create_child_node_under_parent",
         "set_node_dependency",
         "release_node_to_pending",
+        "release_children_and_return_to_pending",
     ):
         assert (
             translate_digestible_tool_name_to_mcp("unharness-api", node_building_tool)
@@ -87,6 +88,7 @@ def test_digestible_vocabulary_lists_the_unharness_tools():
     assert "create_child_node_under_parent" in names
     assert "set_node_dependency" in names
     assert "release_node_to_pending" in names
+    assert "release_children_and_return_to_pending" in names
 
 
 def test_result_message_composition_covers_empty_and_error():

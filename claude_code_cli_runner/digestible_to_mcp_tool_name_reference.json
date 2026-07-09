@@ -13,6 +13,7 @@
       "create_child_node_under_parent": "create_child_node_under_parent",
       "set_node_dependency": "set_node_dependency",
       "release_node_to_pending": "release_node_to_pending",
+      "release_children_and_return_to_pending": "release_children_and_return_to_pending",
       "abandon_task_so_flow_continues_without_it": "abandon_task_so_flow_continues_without_it",
       "request_node_status_change": "request_node_status_change",
       "request_node_title_change": "request_node_title_change",
