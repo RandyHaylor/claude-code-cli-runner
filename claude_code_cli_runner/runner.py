@@ -70,6 +70,7 @@ from .unharness_mcp_tool_executor import execute_unharness_mcp_tool_call
 from .result import RunResult
 from . import session_registry
 from . import claude_session_store
+from . import claude_base_session
 from .transports import (
     build_command_for,
     build_fork_claude_argv,
@@ -124,7 +125,26 @@ def run_claude_code_task(
             projects_root=projects_root,
         )
 
-    # No reuse: inline the chunk (if present) and run normally.
+    # BASE-SESSION FORK (raw-1211/1212): a claude task's FIRST run (a caller-minted
+    # session_id, resume_session False, no reusable chunk) forks its fresh session from
+    # a warm, dated base session whose universal init prompt is already cached — instead
+    # of paying the full session-creation cost. CLAUDE-ONLY (adapter isolation),
+    # env-gated (default on), best-effort: any failure falls through to a plain run.
+    if (
+        run_request.harness != HARNESS_OPENCODE_CLI
+        and run_request.session_id
+        and not run_request.resume_session
+        and _claude_base_session_fork_enabled()
+    ):
+        forked_result = _try_fork_task_from_base_session(
+            run_request,
+            pause_poll_seconds=pause_poll_seconds,
+            projects_root=projects_root,
+        )
+        if forked_result is not None:
+            return forked_result
+
+    # No reuse / no fork: inline the chunk (if present) and run normally.
     effective_input = _inline_input_content(run_request)
     return _stream_one_run(
         run_request,
@@ -133,6 +153,76 @@ def run_claude_code_task(
         pause_poll_seconds=pause_poll_seconds,
         startup_notes=None,
     )
+
+
+def _claude_base_session_fork_enabled() -> bool:
+    """Base-session forking is ON by default (raw-1211/1212); an operator can disable it
+    with ``UNHARNESS_ENABLE_CLAUDE_BASE_SESSION_FORK=0`` (0/false/no, case-insensitive)."""
+    raw = os.environ.get("UNHARNESS_ENABLE_CLAUDE_BASE_SESSION_FORK")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _try_fork_task_from_base_session(
+    run_request: RunRequest,
+    *,
+    pause_poll_seconds: float,
+    projects_root=None,
+) -> "RunResult | None":
+    """Fork this task's fresh session (``run_request.session_id``) from the warm base
+    session. Returns the RunResult on success, or None on ANY failure so the caller
+    runs the task as a plain new session (work is never blocked)."""
+    task_cwd = os.fspath(run_request.workspace_directory)
+    try:
+        def prime_base_session(base_session_id: str) -> None:
+            _run_priming_session(
+                run_request,
+                argv=build_priming_claude_argv(
+                    run_request,
+                    base_session_id,
+                    claude_base_session.UNIVERSAL_INIT_PROMPT,
+                ),
+            )
+
+        def session_jsonl_path_for(base_session_id: str) -> str:
+            return claude_session_store.session_jsonl_path(
+                task_cwd, base_session_id, projects_root=projects_root
+            )
+
+        base_record = claude_base_session.ensure_fresh_base_session(
+            prime_base_session=prime_base_session,
+            session_jsonl_path_for=session_jsonl_path_for,
+        )
+        base_session_id = base_record["session_id"]
+        base_source_jsonl = base_record["source_jsonl"]
+        if not base_source_jsonl:
+            raise RuntimeError("base session has no recorded source jsonl")
+        # claude --resume only finds the base if its jsonl exists under THIS task's cwd.
+        claude_session_store.ensure_session_present_in_cwd(
+            base_session_id, base_source_jsonl, task_cwd, projects_root=projects_root
+        )
+        fork_argv = build_fork_claude_argv(
+            run_request, base_session_id, run_request.session_id
+        )
+        return _stream_one_run(
+            run_request,
+            argv=fork_argv,
+            input_content=list(run_request.input_content),
+            pause_poll_seconds=pause_poll_seconds,
+            startup_notes=[
+                "forked task session %s from base session %s"
+                % (run_request.session_id, base_session_id)
+            ],
+        )
+    except Exception:  # noqa: BLE001 — base forking must NEVER fail the task
+        # A base that could not be forked is likely unusable; drop it so the next
+        # task primes a fresh one.
+        try:
+            claude_base_session.forget_base_session()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 def _inline_input_content(run_request: RunRequest) -> list:
