@@ -238,6 +238,11 @@ class RunRequest:
     # standing in for the real stdio MCP executor. None (the default, and the only
     # value reachable over the HTTP wire) => the real executor is used.
     unharness_tool_call_executor: Optional[object] = None
+    # Resume-failure fallback (raw-1216/1222): on a RESUME dispatch the caller passes the
+    # FULL prompt (context + task + reply-format), built fresh THIS dispatch and NEVER
+    # persisted, so that if the session cannot be resumed the runner can start a FRESH
+    # session with it instead of failing. Sent only when needed; ignored on first runs.
+    resume_fallback_prompt: Optional[str] = None
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:

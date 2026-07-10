@@ -14,6 +14,7 @@ run at a stub claude; the default uses the transport for the request.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import signal
@@ -129,6 +130,42 @@ def run_claude_code_task(
             registry_path=registry_path,
             projects_root=projects_root,
         )
+
+    # RESUME-FAILURE FALLBACK (raw-1216/1222): a claude RESUME turn whose session
+    # transcript is GONE from the task cwd (e.g. VM /tmp cleared) cannot be resumed.
+    # Deterministic pre-check (no stderr parsing): if the transcript jsonl is missing,
+    # run a FRESH session with the caller-supplied full fallback prompt instead of
+    # failing; claude mints the new id and it is captured on the normal result path.
+    # CLAUDE-ONLY (adapter isolation); requires the caller to have sent the prompt.
+    if (
+        run_request.harness != HARNESS_OPENCODE_CLI
+        and run_request.resume_session
+        and run_request.session_id
+        and run_request.resume_fallback_prompt
+    ):
+        resumed_transcript_path = claude_session_store.session_jsonl_path(
+            os.fspath(run_request.workspace_directory),
+            run_request.session_id,
+            projects_root=projects_root,
+        )
+        if not os.path.isfile(resumed_transcript_path):
+            fresh_session_request = dataclasses.replace(
+                run_request,
+                session_id=None,
+                resume_session=False,
+                input_content=[TextBlock(run_request.resume_fallback_prompt)],
+            )
+            return _stream_one_run(
+                fresh_session_request,
+                argv=build_command(fresh_session_request),
+                input_content=list(fresh_session_request.input_content),
+                pause_poll_seconds=pause_poll_seconds,
+                startup_notes=[
+                    "resume of session %s impossible (transcript missing at %s); "
+                    "started a FRESH session with the resume fallback prompt"
+                    % (run_request.session_id, resumed_transcript_path)
+                ],
+            )
 
     # BASE-SESSION FORK (raw-1211/1212): a claude task's FIRST run (a caller-minted
     # session_id, resume_session False, no reusable chunk) forks its fresh session from

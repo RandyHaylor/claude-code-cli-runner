@@ -106,6 +106,7 @@ def request_from_json(payload: dict) -> RunRequest:
         permission_mode=payload.get("permission_mode"),
         session_id=payload.get("session_id"),
         resume_session=payload.get("resume_session", False),
+        resume_fallback_prompt=payload.get("resume_fallback_prompt"),
         extra_cli_flags=payload.get("extra_cli_flags", []),
         keep_alive_expected=payload.get("keep_alive_expected", False),
         keep_alive_timeout_seconds=payload.get("keep_alive_timeout_seconds", 60.0),
