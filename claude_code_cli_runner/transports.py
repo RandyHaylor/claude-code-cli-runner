@@ -58,16 +58,24 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         # claude CLI (real but not shown in --help). The runner sends the
         # initialize handshake + control_response decisions.
         argv += ["--permission-prompt-tool", "stdio"]
-        # Pin the session's default permission posture to the requested mode so a
-        # manual/collaborative run actually GATES — otherwise a host/VM standing
-        # ``defaultMode: bypassPermissions`` in settings.json leaks through and
-        # auto-allows tools (verified on the sandbox VM), defeating the prompt.
-        argv += [
-            "--settings",
-            json.dumps({"permissions": {"defaultMode": run_request.permission_mode}}),
-        ]
     elif run_request.dangerously_skip_permissions:
         argv.insert(2, "--dangerously-skip-permissions")
+    # Compose ONE inline --settings argument (raw-1252): the caller's claude settings
+    # overrides (effort/thinking, etc.) MERGED with the permission-mode default posture.
+    # Inline --settings applies on the host AND a remote/VM claude regardless of cwd and
+    # OUTRANKS the environment's settings.json (closing the gap where a per-workspace
+    # settings.local.json is not read by a remote claude). Emitted only when non-empty.
+    combined_claude_settings = dict(run_request.claude_settings_overrides or {})
+    if run_request.permission_mode:
+        # Pin the session's default permission posture so a manual/collaborative run
+        # actually GATES — otherwise a host/VM standing ``defaultMode:
+        # bypassPermissions`` leaks through and auto-allows tools (verified on the
+        # sandbox VM), defeating the prompt.
+        permissions_block = dict(combined_claude_settings.get("permissions") or {})
+        permissions_block["defaultMode"] = run_request.permission_mode
+        combined_claude_settings["permissions"] = permissions_block
+    if combined_claude_settings:
+        argv += ["--settings", json.dumps(combined_claude_settings, sort_keys=True)]
     if run_request.model:
         argv[2:2] = ["--model", run_request.model]
     # Explicit session id so the session is resumable across turns (resume-on-

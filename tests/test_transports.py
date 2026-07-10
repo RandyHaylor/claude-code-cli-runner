@@ -117,6 +117,57 @@ def test_no_permission_mode_keeps_skip_permissions_path():
     assert "--permission-mode" not in argv
 
 
+def _settings_json_from_argv(argv):
+    import json as _json
+    return _json.loads(argv[argv.index("--settings") + 1])
+
+
+def test_claude_settings_overrides_emitted_as_inline_settings():
+    # raw-1252: effort/thinking policy is passed as an inline --settings argument so
+    # it reaches the claude process on host AND remote/VM regardless of cwd.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            dangerously_skip_permissions=True,
+            claude_settings_overrides={"effortLevel": "low", "alwaysThinkingEnabled": False},
+        )
+    )
+    assert "--settings" in argv
+    settings = _settings_json_from_argv(argv)
+    assert settings["effortLevel"] == "low"
+    assert settings["alwaysThinkingEnabled"] is False
+
+
+def test_settings_overrides_merged_with_permission_mode_default_posture():
+    # The overrides and the permission-mode default posture are MERGED into one
+    # --settings argument, not emitted twice.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            permission_mode="acceptEdits",
+            claude_settings_overrides={"effortLevel": "low", "alwaysThinkingEnabled": False},
+        )
+    )
+    assert argv.count("--settings") == 1
+    settings = _settings_json_from_argv(argv)
+    assert settings["effortLevel"] == "low"
+    assert settings["alwaysThinkingEnabled"] is False
+    assert settings["permissions"]["defaultMode"] == "acceptEdits"
+
+
+def test_no_overrides_and_no_permission_mode_omits_settings():
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            dangerously_skip_permissions=True,
+        )
+    )
+    assert "--settings" not in argv
+
+
 def test_explicit_session_id_creates_session():
     # raw-538 resume-on-reply turn 1: --session-id <id> (create), not --resume.
     argv = transports.build_base_claude_argv(

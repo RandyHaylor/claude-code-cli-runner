@@ -243,6 +243,14 @@ class RunRequest:
     # persisted, so that if the session cannot be resumed the runner can start a FRESH
     # session with it instead of failing. Sent only when needed; ignored on first runs.
     resume_fallback_prompt: Optional[str] = None
+    # Caller-composed claude settings overrides (raw-1248/1252): a dict of claude
+    # settings.json keys (e.g. {"effortLevel": "low", "alwaysThinkingEnabled": False})
+    # emitted as an inline ``--settings`` argument so the caller's policy applies to
+    # EVERY claude -p invocation — on the host AND on a remote/VM claude, regardless of
+    # cwd — and OUTRANKS the environment's own settings.json. This closes the gap where
+    # a per-workspace settings.local.json is NOT read by a remote claude. Merged with
+    # the permission-mode default posture below into one --settings argument.
+    claude_settings_overrides: Optional[dict] = None
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:
