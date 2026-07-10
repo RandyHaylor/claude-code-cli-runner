@@ -157,6 +157,28 @@ def test_settings_overrides_merged_with_permission_mode_default_posture():
     assert settings["permissions"]["defaultMode"] == "acceptEdits"
 
 
+def test_append_system_prompt_text_emitted():
+    # raw-1255: session-start steering text is appended to the system prompt via
+    # the official --append-system-prompt flag.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[],
+            workspace_directory="/tmp/ws",
+            dangerously_skip_permissions=True,
+            append_system_prompt_text="Only think when the task needs it.",
+        )
+    )
+    assert "--append-system-prompt" in argv
+    assert argv[argv.index("--append-system-prompt") + 1] == "Only think when the task needs it."
+
+
+def test_no_append_system_prompt_text_omits_flag():
+    argv = transports.build_base_claude_argv(
+        RunRequest(input_content=[], workspace_directory="/tmp/ws", dangerously_skip_permissions=True)
+    )
+    assert "--append-system-prompt" not in argv
+
+
 def test_no_overrides_and_no_permission_mode_omits_settings():
     argv = transports.build_base_claude_argv(
         RunRequest(

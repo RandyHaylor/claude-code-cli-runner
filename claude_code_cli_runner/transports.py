@@ -76,6 +76,11 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         combined_claude_settings["permissions"] = permissions_block
     if combined_claude_settings:
         argv += ["--settings", json.dumps(combined_claude_settings, sort_keys=True)]
+    # Caller session-start steering (raw-1255): append text to the system prompt via
+    # the official --append-system-prompt flag. Part of the (stable) system prompt, so
+    # it stays in the cached prefix shared by warm forks. Emitted only when non-empty.
+    if run_request.append_system_prompt_text:
+        argv += ["--append-system-prompt", run_request.append_system_prompt_text]
     if run_request.model:
         argv[2:2] = ["--model", run_request.model]
     # Explicit session id so the session is resumable across turns (resume-on-

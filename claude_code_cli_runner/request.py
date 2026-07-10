@@ -251,6 +251,14 @@ class RunRequest:
     # a per-workspace settings.local.json is NOT read by a remote claude. Merged with
     # the permission-mode default posture below into one --settings argument.
     claude_settings_overrides: Optional[dict] = None
+    # Caller-composed text appended to the claude system prompt at session start via
+    # the CLI's ``--append-system-prompt`` flag (raw-1255). Used to steer behavior in
+    # plain English — e.g. telling adaptive-reasoning models when NOT to think, which
+    # is Anthropic's guidance for controlling thinking on those models (the
+    # alwaysThinkingEnabled/effort settings alone do not fully disable adaptive
+    # thinking). Being part of the (stable) system prompt, it rides in the cached
+    # prefix that warm base-session forks reuse. Emitted only when non-empty.
+    append_system_prompt_text: Optional[str] = None
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:
