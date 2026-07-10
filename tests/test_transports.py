@@ -72,12 +72,13 @@ def test_priming_argv_is_simple_completing_call():
     assert "stream-json" not in argv
 
 
-def test_fork_argv_resumes_primed_and_forks_to_fresh():
+def test_fork_argv_resumes_primed_and_forks_without_choosing_the_id():
+    # raw-1229: fork WITHOUT --session-id; claude mints the forked id, we capture it.
     request = RunRequest(input_content=[], workspace_directory="/tmp/ws")
-    argv = transports.build_fork_claude_argv(request, "primed-xyz", "task-abc")
+    argv = transports.build_fork_claude_argv(request, "primed-xyz")
     assert argv[argv.index("--resume") + 1] == "primed-xyz"
     assert "--fork-session" in argv
-    assert argv[argv.index("--session-id") + 1] == "task-abc"
+    assert "--session-id" not in argv
 
 
 def test_model_flag_threaded_into_both_transports():

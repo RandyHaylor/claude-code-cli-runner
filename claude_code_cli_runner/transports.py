@@ -175,23 +175,21 @@ def build_priming_claude_argv(
 
 
 def build_fork_claude_argv(
-    run_request: RunRequest, primed_session_id: str, task_session_id: str
+    run_request: RunRequest, primed_session_id: str
 ) -> "list[str]":
     """Argv for a TASK run that FORKS from an already-primed session.
 
-    ``claude --resume <primed> --fork-session --session-id <fresh>`` creates a
-    new session that inherits the primed session's history (the chunk is already
-    in it); the primed session is untouched and reusable. The per-task remainder
-    (``input_content``) is delivered over stdin as usual.
+    ``claude --resume <primed> --fork-session`` creates a new session that inherits
+    the primed session's history; the primed session is untouched and reusable. The
+    NEW forked session id is MINTED BY CLAUDE and reported on the run's result event —
+    we do NOT pass ``--session-id`` here. Combining ``--session-id`` with
+    ``--fork-session`` is undocumented and behaved inconsistently live (claude sometimes
+    left the passed id a near-empty stub and wrote the work to its own minted id,
+    raw-1224..1229). So the caller CAPTURES claude's minted fork id, exactly as it
+    captures opencode's minted id. The per-task input is delivered over stdin as usual.
     """
     argv = build_base_claude_argv(run_request)
-    argv += [
-        "--resume",
-        primed_session_id,
-        "--fork-session",
-        "--session-id",
-        task_session_id,
-    ]
+    argv += ["--resume", primed_session_id, "--fork-session"]
     return argv
 
 

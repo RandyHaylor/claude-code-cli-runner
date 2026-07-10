@@ -82,14 +82,12 @@ def test_first_run_primes_and_task_forks(tmp_path, monkeypatch):
     assert "--output-format" not in prime_argv
     assert "--include-partial-messages" not in prime_argv
 
-    # The task run forks from the primed sid with a FRESH task sid.
+    # The task run forks from the primed sid; claude MINTS the forked id (raw-1229),
+    # so no --session-id is passed on the fork.
     assert "--resume" in task_argv
     assert task_argv[task_argv.index("--resume") + 1] == primed_sid
     assert "--fork-session" in task_argv
-    assert "--session-id" in task_argv
-    fresh_sid = task_argv[task_argv.index("--session-id") + 1]
-    _uuid.UUID(fresh_sid)  # the task sid is a fresh valid UUID
-    assert fresh_sid != primed_sid
+    assert "--session-id" not in task_argv
 
     # The chunk text is NOT re-sent in the task run (it lives in the primed
     # session); the task user message carries only the per-task remainder.

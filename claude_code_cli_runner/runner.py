@@ -101,6 +101,11 @@ def run_claude_code_task(
     task runs normally (always correct). A note is appended to the live log on
     any fallback.
     """
+    # A test injects a stub ``build_command``; base-session forking (which builds its own
+    # prime/fork argv, bypassing the stub) must NOT fire in that case, or a stub test
+    # would launch the real prime/fork flow. So forking is a PRODUCTION-path behavior:
+    # only when build_command is the default (not injected).
+    build_command_was_injected = build_command is not None
     if build_command is None:
         build_command = build_command_for
 
@@ -132,8 +137,8 @@ def run_claude_code_task(
     # env-gated (default on), best-effort: any failure falls through to a plain run.
     if (
         run_request.harness != HARNESS_OPENCODE_CLI
-        and run_request.session_id
         and not run_request.resume_session
+        and not build_command_was_injected
         and _claude_base_session_fork_enabled()
     ):
         forked_result = _try_fork_task_from_base_session(
@@ -202,17 +207,16 @@ def _try_fork_task_from_base_session(
         claude_session_store.ensure_session_present_in_cwd(
             base_session_id, base_source_jsonl, task_cwd, projects_root=projects_root
         )
-        fork_argv = build_fork_claude_argv(
-            run_request, base_session_id, run_request.session_id
-        )
+        fork_argv = build_fork_claude_argv(run_request, base_session_id)
         return _stream_one_run(
             run_request,
             argv=fork_argv,
             input_content=list(run_request.input_content),
             pause_poll_seconds=pause_poll_seconds,
             startup_notes=[
-                "forked task session %s from base session %s"
-                % (run_request.session_id, base_session_id)
+                "forked a new task session from base session %s "
+                "(claude mints the forked id; captured from the result)"
+                % base_session_id
             ],
         )
     except Exception:  # noqa: BLE001 — base forking must NEVER fail the task
@@ -320,9 +324,9 @@ def _run_with_session_reuse(
         )
 
         # TASK as a FORK of the primed session: send ONLY the per-task remainder
-        # (the chunk is already in the primed session, NOT re-sent here).
-        task_sid = str(uuid.uuid4())  # must be a valid UUID for claude --session-id
-        fork_argv = build_fork_claude_argv(run_request, primed_sid, task_sid)
+        # (the chunk is already in the primed session, NOT re-sent here). claude mints
+        # the forked session id; we do not choose it.
+        fork_argv = build_fork_claude_argv(run_request, primed_sid)
         return _stream_one_run(
             run_request,
             argv=fork_argv,
