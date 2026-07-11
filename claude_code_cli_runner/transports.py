@@ -116,6 +116,13 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
             generic_builtin_tool_names, HARNESS_CLAUDE_CLI
         )
         argv += ["--tools", ",".join(claude_specific_tool_names)]
+        # --tools governs BUILT-INS only (CLI docs): account-level MCP servers
+        # (e.g. the login's claude.ai connectors — Gmail/Drive/Calendar
+        # authenticate stubs) still load and leak into a whitelisted session
+        # (observed live: a session accidentally called Gmail authenticate).
+        # Per the docs, --strict-mcp-config WITHOUT --mcp-config loads NO MCP
+        # servers — a whitelisted session gets exactly its assigned tools.
+        argv += ["--strict-mcp-config"]
     argv.extend(run_request.extra_cli_flags)
     return argv
 

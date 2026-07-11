@@ -280,6 +280,29 @@ def test_whitelist_with_empty_builtins_disables_all_local_tools():
     assert argv[argv.index("--tools") + 1] == ""
 
 
+def test_whitelist_also_blocks_account_level_mcp_servers():
+    # --tools governs built-ins only: account-level MCP servers (the login's
+    # claude.ai connectors) still load and leak into a whitelisted session
+    # (observed live: an ingest session called Gmail authenticate). Per the CLI
+    # docs, --strict-mcp-config WITHOUT --mcp-config loads no MCP servers.
+    argv = transports.build_base_claude_argv(
+        RunRequest(
+            input_content=[], workspace_directory="/tmp/ws",
+            assigned_tool_list=["unharness-api-ingest"],
+            restrict_to_assigned_tools_as_whitelist=True,
+        )
+    )
+    assert "--strict-mcp-config" in argv
+    assert "--mcp-config" not in argv
+
+
+def test_no_whitelist_leaves_mcp_servers_untouched():
+    argv = transports.build_base_claude_argv(
+        RunRequest(input_content=[], workspace_directory="/tmp/ws")
+    )
+    assert "--strict-mcp-config" not in argv
+
+
 def test_whitelist_restricts_to_assigned_builtin_tools():
     argv = transports.build_base_claude_argv(
         RunRequest(
