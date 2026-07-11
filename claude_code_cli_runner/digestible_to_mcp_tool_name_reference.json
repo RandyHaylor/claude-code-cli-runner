@@ -11,6 +11,7 @@
       "read_task_live_log": "read_task_live_log",
       "create_work_task_citing_ledger_entries": "create_work_task_citing_ledger_entries",
       "create_child_node_under_parent": "create_child_node_under_parent",
+      "create_project_for_work": "create_project_for_work",
       "set_node_dependency": "set_node_dependency",
       "release_node_to_pending": "release_node_to_pending",
       "release_children_and_return_to_pending": "release_children_and_return_to_pending",
