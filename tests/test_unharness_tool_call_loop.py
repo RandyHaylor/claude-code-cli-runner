@@ -131,6 +131,47 @@ def test_usage_instructions_fall_back_to_names_only_without_shapes():
     assert "Available tools: read_one_node." in instructions
 
 
+def test_ingest_surface_excludes_request_minting_and_gated_tools():
+    # The role-scoped ingest surface (raw-1353): no
+    # create_work_task_citing_ledger_entries (mints a fresh top-level request —
+    # a live session looped on it) and no user-gated request_* ops.
+    ingest_names = set(list_digestible_tool_names("unharness-api-ingest"))
+    assert "create_work_task_citing_ledger_entries" not in ingest_names
+    assert not any(name.startswith("request_") for name in ingest_names)
+    assert "create_child_node_under_parent" in ingest_names
+    assert "create_project_for_work" in ingest_names
+    assert "release_children_and_return_to_pending" in ingest_names
+    # It is a strict subset of the full surface.
+    assert ingest_names < set(list_digestible_tool_names("unharness-api"))
+
+
+def test_executor_rejects_wrong_argument_keys_with_expected_signature():
+    from claude_code_cli_runner.unharness_mcp_tool_executor import (
+        execute_unharness_mcp_tool_call,
+    )
+
+    # The exact live failure: invented container_id on read_one_node (the real
+    # key IS container_id — use the truly-invented shape from the session:
+    # container_id + node_id together).
+    text, is_error = execute_unharness_mcp_tool_call(
+        "read_one_node",
+        {"container_id": "unharness-live-store", "node_id": "task_x"},
+        {},
+    )
+    assert is_error
+    assert "unknown argument key(s): node_id" in text
+    assert "read_one_node(container_id: str)" in text
+
+    # Missing required key is named too.
+    text, is_error = execute_unharness_mcp_tool_call(
+        "create_child_node_under_parent", {"parent_id": "p"}, {}
+    )
+    assert is_error
+    assert "missing required argument key(s)" in text
+    assert "node_type" in text
+    assert "referenced_ledger_entry_ids" in text
+
+
 def test_registry_resolves_real_shapes_from_the_mcp_server_checkout():
     # The sibling checkout layout exists on the host and in the VM alike; the
     # registry imports the MCP server package's own introspection so the shapes

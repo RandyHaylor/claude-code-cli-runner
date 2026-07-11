@@ -1,6 +1,21 @@
 {
-  "_description": "Digestible -> standard-MCP tool-name translation for the runner's MCP integration layer (SoT nd-473). Agents are prompted with the DIGESTIBLE names (left); the runner translates each detected call to the standard MCP tool name (right) before forwarding via tools/call. The unharness MCP server's names are already verbose and purpose-driven, so the seed map is identity; the layer exists so a simpler agent-facing surface (or a role-scoped subset) can be presented without touching the industry-standard server.",
+  "_description": "Digestible -> standard-MCP tool-name translation for the runner's MCP integration layer (SoT nd-473). Agents are prompted with the DIGESTIBLE names (left); the runner translates each detected call to the standard MCP tool name (right) before forwarding via tools/call. The unharness MCP server's names are already verbose and purpose-driven, so the seed map is identity; the layer exists so a simpler agent-facing surface (or a role-scoped subset) can be presented without touching the industry-standard server. 'unharness-api-ingest' is exactly that role-scoped subset (raw-1353): the ingest-session surface EXCLUDES create_work_task_citing_ledger_entries (it mints a fresh top-level user_request that re-enters ingest -- observed looping a live session that reached for it as 'create work task') and the user-gated request_* ops (an ingest session composes its own subtree ungated; the gated channel is the assistant's).",
   "mcp_tool_name_by_digestible_name": {
+    "unharness-api-ingest": {
+      "read_dashboard_state": "read_dashboard_state",
+      "list_all_container_nodes": "list_all_container_nodes",
+      "read_one_node": "read_one_node",
+      "read_node_subtree": "read_node_subtree",
+      "read_project_deliverables": "read_project_deliverables",
+      "read_project_activity_log": "read_project_activity_log",
+      "read_task_live_log": "read_task_live_log",
+      "create_child_node_under_parent": "create_child_node_under_parent",
+      "create_project_for_work": "create_project_for_work",
+      "set_node_dependency": "set_node_dependency",
+      "release_node_to_pending": "release_node_to_pending",
+      "release_children_and_return_to_pending": "release_children_and_return_to_pending",
+      "abandon_task_so_flow_continues_without_it": "abandon_task_so_flow_continues_without_it"
+    },
     "unharness-api": {
       "read_dashboard_state": "read_dashboard_state",
       "list_all_container_nodes": "list_all_container_nodes",

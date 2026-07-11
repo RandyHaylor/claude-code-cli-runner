@@ -16,11 +16,17 @@ becomes available.
 from __future__ import annotations
 
 # The Unharness API, exposed to agents as a runner-provided MCP (the runner mediates
-# it as the sole executor; harness-agnostic). Reserved now; enablement lands with the
-# MCP-client layer.
+# it as the sole executor; harness-agnostic).
 UNHARNESS_API_RUNNER_MCP_NAME = "unharness-api"
+# The INGEST-SESSION role-scoped surface of the same MCP server (raw-1353): the
+# subset an ingest session needs — reads, the node-building primitives, release,
+# abandon — and nothing that can mint a fresh top-level request or requires the
+# user-gated approval channel.
+UNHARNESS_API_INGEST_RUNNER_MCP_NAME = "unharness-api-ingest"
 
-KNOWN_RUNNER_PROVIDED_MCP_NAMES = frozenset({UNHARNESS_API_RUNNER_MCP_NAME})
+KNOWN_RUNNER_PROVIDED_MCP_NAMES = frozenset(
+    {UNHARNESS_API_RUNNER_MCP_NAME, UNHARNESS_API_INGEST_RUNNER_MCP_NAME}
+)
 
 
 def split_assigned_tools_into_builtins_and_runner_mcps(
