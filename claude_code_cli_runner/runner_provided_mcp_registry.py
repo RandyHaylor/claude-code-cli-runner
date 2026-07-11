@@ -73,6 +73,77 @@ def list_digestible_tool_names(runner_provided_mcp_name: str) -> "list[str]":
     ]
 
 
+def _resolve_unharness_mcp_server_source_directory() -> "str | None":
+    """The Unharness MCP server SOURCE checkout this runner can import tool shapes
+    from: the ``UNHARNESS_MCP_SERVER_SOURCE_DIRECTORY`` env var when it points at a
+    real directory (the run environment, e.g. the VM), else the conventional
+    sibling checkout next to this runner's repository (the same relative layout on
+    the host and in the VM: ``<repos>/claude-code-cli-runner`` and
+    ``<repos>/unharness-mcp-server``). None when neither exists."""
+    import os
+
+    candidate = os.environ.get("UNHARNESS_MCP_SERVER_SOURCE_DIRECTORY")
+    if candidate and os.path.isdir(os.path.join(candidate, "unharness_mcp_server")):
+        return candidate
+    runner_repo_directory = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    sibling = os.path.join(
+        os.path.dirname(runner_repo_directory), "unharness-mcp-server"
+    )
+    if os.path.isdir(os.path.join(sibling, "unharness_mcp_server")):
+        return sibling
+    return None
+
+
+def describe_digestible_tool_shapes(
+    runner_provided_mcp_name: str,
+) -> "list[dict] | None":
+    """The agent-facing SHAPES (name + description + parameters) of one
+    runner-provided MCP's digestible tools, in the reference-file order:
+
+    ``[{"tool_name": <digestible name>, "description": str,
+        "parameters": [{"name", "type", "required"}, ...]}, ...]``
+
+    Shapes come from the MCP server package's own introspection (its single
+    source of truth — the registered tool functions), mapped MCP-name ->
+    digestible-name through the reference file. Returns None when the MCP server
+    source is not importable here (the caller falls back to names-only)."""
+    import sys
+
+    this_mcp_map = _load_digestible_tool_name_maps().get(runner_provided_mcp_name) or {}
+    if not this_mcp_map:
+        return None
+    source_directory = _resolve_unharness_mcp_server_source_directory()
+    if not source_directory:
+        return None
+    if source_directory not in sys.path:
+        sys.path.insert(0, source_directory)
+    try:
+        from unharness_mcp_server.tool_shape_introspection import (
+            describe_tool_shapes_by_name,
+        )
+
+        mcp_shapes_by_name = describe_tool_shapes_by_name()
+    except Exception:
+        return None
+    shapes = []
+    for digestible_name, mcp_name in this_mcp_map.items():
+        if digestible_name.startswith("_"):
+            continue
+        mcp_shape = mcp_shapes_by_name.get(mcp_name)
+        if not mcp_shape:
+            continue
+        shapes.append(
+            {
+                "tool_name": digestible_name,
+                "description": mcp_shape["description"],
+                "parameters": mcp_shape["parameters"],
+            }
+        )
+    return shapes or None
+
+
 def translate_digestible_tool_name_to_mcp(
     runner_provided_mcp_name: str, digestible_tool_name: str
 ) -> str:

@@ -20,6 +20,7 @@ from claude_code_cli_runner.unharness_tool_call_detection import (
 )
 from claude_code_cli_runner.runner_provided_mcp_registry import (
     DigestibleToolNameUnknown,
+    describe_digestible_tool_shapes,
     list_digestible_tool_names,
     translate_digestible_tool_name_to_mcp,
 )
@@ -101,6 +102,49 @@ def test_usage_instructions_teach_the_fence_and_the_vocabulary():
     instructions = compose_unharness_tool_usage_instructions(["read_one_node"])
     assert "```unharness-tool" in instructions
     assert "read_one_node" in instructions
+
+
+def test_usage_instructions_render_parameter_shapes_when_supplied():
+    shapes = [
+        {
+            "tool_name": "create_child_node_under_parent",
+            "description": "Create ONE child node under a parent.",
+            "parameters": [
+                {"name": "parent_id", "type": "str", "required": True},
+                {"name": "node_type", "type": "str", "required": True},
+                {"name": "blocked_on", "type": "str", "required": False},
+            ],
+        }
+    ]
+    instructions = compose_unharness_tool_usage_instructions(
+        ["create_child_node_under_parent"], tool_shapes=shapes
+    )
+    assert "create_child_node_under_parent(parent_id: str, node_type: str, blocked_on?: str)" in instructions
+    assert "Create ONE child node under a parent." in instructions
+    assert "EXACT argument keys" in instructions
+
+
+def test_usage_instructions_fall_back_to_names_only_without_shapes():
+    instructions = compose_unharness_tool_usage_instructions(
+        ["read_one_node"], tool_shapes=None
+    )
+    assert "Available tools: read_one_node." in instructions
+
+
+def test_registry_resolves_real_shapes_from_the_mcp_server_checkout():
+    # The sibling checkout layout exists on the host and in the VM alike; the
+    # registry imports the MCP server package's own introspection so the shapes
+    # the prompt teaches can never drift from the server's registration.
+    shapes = describe_digestible_tool_shapes("unharness-api")
+    assert shapes, "MCP server checkout not resolvable — shapes unavailable"
+    by_name = {shape["tool_name"]: shape for shape in shapes}
+    create_shape = by_name["create_child_node_under_parent"]
+    parameter_names = {p["name"] for p in create_shape["parameters"]}
+    assert "parent_id" in parameter_names
+    assert "referenced_ledger_entry_ids" in parameter_names
+    # Digestible names (the prompt vocabulary) are the keys, mapped through the
+    # reference file — every listed digestible name gets a shape.
+    assert set(by_name) == set(list_digestible_tool_names("unharness-api"))
 
 
 # ---- the loop against the stub harness ----------------------------------------------

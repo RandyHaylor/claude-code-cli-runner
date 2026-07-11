@@ -75,20 +75,63 @@ def compose_tool_result_turn_message_text(
     )
 
 
+def _render_one_tool_shape_line(tool_shape: dict) -> str:
+    """One tool as ``name(param: type, optional_param?: type) — description``.
+    Optional parameters carry a ``?`` marker; the exact argument names shown are
+    the exact JSON keys the agent must send."""
+    rendered_parameters = ", ".join(
+        "%s%s: %s"
+        % (
+            parameter["name"],
+            "" if parameter.get("required") else "?",
+            parameter.get("type") or "any",
+        )
+        for parameter in (tool_shape.get("parameters") or [])
+    )
+    line = "- %s(%s)" % (tool_shape["tool_name"], rendered_parameters)
+    description = tool_shape.get("description")
+    if description:
+        line += " — " + description
+    return line
+
+
 def compose_unharness_tool_usage_instructions(
     digestible_tool_names: "list[str]",
+    tool_shapes: "list[dict] | None" = None,
 ) -> str:
-    """The prompt text that TEACHES an agent the emission shape. Exposed so the
-    caller (Unharness) can inject it into an API-only agent's brief; generated from
-    the actual tool list so prompt and vocabulary cannot drift."""
-    return (
+    """The prompt text that TEACHES an agent the emission shape AND each tool's
+    exact argument shape. Exposed so the caller (Unharness) can inject it into an
+    API-only agent's brief; generated from the actual tool list — and, when
+    ``tool_shapes`` is supplied (see the registry's
+    ``describe_digestible_tool_shapes``), from the MCP server's own introspected
+    parameter shapes — so prompt and vocabulary cannot drift. Bare names are the
+    FALLBACK only: names without shapes force the agent to guess argument
+    structures (observed live: hallucinated arguments looping a session)."""
+    header = (
         "UNHARNESS TOOLS: you have no local tools; you operate Unharness by emitting "
         "a tool call as a fenced block in your reply, then STOPPING to wait for the "
         "result, which arrives as your next input. Emit exactly:\n"
         "```" + UNHARNESS_TOOL_CALL_FENCE_LANGUAGE + "\n"
         '{"tool": "<tool name>", "arguments": { ... }}\n'
         "```\n"
-        "One call per reply. Available tools: "
-        + ", ".join(digestible_tool_names)
-        + ". When you are fully done, reply WITHOUT any tool block."
+        "One call per reply. "
     )
+    footer = " When you are fully done, reply WITHOUT any tool block."
+    shapes_by_name = {
+        shape["tool_name"]: shape for shape in (tool_shapes or [])
+    }
+    if shapes_by_name:
+        tool_lines = []
+        for name in digestible_tool_names:
+            shape = shapes_by_name.get(name)
+            tool_lines.append(
+                _render_one_tool_shape_line(shape) if shape else "- %s" % name
+            )
+        return (
+            header
+            + "Your tools, with the EXACT argument keys each accepts (a ? marks an "
+            "optional argument; send no other keys):\n"
+            + "\n".join(tool_lines)
+            + footer
+        )
+    return header + "Available tools: " + ", ".join(digestible_tool_names) + "." + footer
