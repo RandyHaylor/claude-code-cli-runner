@@ -109,6 +109,7 @@ def request_from_json(payload: dict) -> RunRequest:
         resume_fallback_prompt=payload.get("resume_fallback_prompt"),
         claude_settings_overrides=payload.get("claude_settings_overrides"),
         append_system_prompt_text=payload.get("append_system_prompt_text"),
+        unharness_idle_seconds=payload.get("unharness_idle_seconds"),
         extra_cli_flags=payload.get("extra_cli_flags", []),
         keep_alive_expected=payload.get("keep_alive_expected", False),
         keep_alive_timeout_seconds=payload.get("keep_alive_timeout_seconds", 60.0),

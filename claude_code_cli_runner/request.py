@@ -259,6 +259,13 @@ class RunRequest:
     # thinking). Being part of the (stable) system prompt, it rides in the cached
     # prefix that warm base-session forks reuse. Emitted only when non-empty.
     append_system_prompt_text: Optional[str] = None
+    # How long Unharness had been idle (no node activity anywhere) as of THIS dispatch,
+    # measured by the caller's supervisor (raw-1362/1368). Used ONLY by the warm base-
+    # session fork path: when the idle time exceeds the base's max-idle window the base
+    # is regenerated fresh (its forkable cache has expired anyway, and a fresh base
+    # picks up interim dependency/prompt updates). None => unknown => the idle gate is
+    # skipped and only the base's max AGE governs regeneration.
+    unharness_idle_seconds: Optional[float] = None
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:

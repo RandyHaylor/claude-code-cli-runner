@@ -6,11 +6,20 @@ CLAUDE-ONLY by design (adapter isolation, raw-1217): opencode and the runner cor
 see this — it lives entirely in the claude adapter path.
 
 Lifecycle: a single base session is kept in a small on-disk store with its creation
-time. When a base is needed and none exists — OR the existing one is older than the max
-age (default 5 days; override via ``UNHARNESS_CLAUDE_BASE_SESSION_MAX_AGE_DAYS``) — a new
-base is primed with the universal init prompt and recorded. This is BEST-EFFORT: any
-failure means the caller simply runs the task as a plain new session (no fork), never
-blocking work.
+time. A new base is primed with the universal init prompt and recorded when a base is
+needed and any of these hold (raw-1362):
+  * none exists, or its transcript went missing;
+  * the existing one is older than the max age (default 3 days; override via
+    ``UNHARNESS_CLAUDE_BASE_SESSION_MAX_AGE_DAYS``) — this bounds how long a stale
+    session template (built against older dependencies / prompting) can linger;
+  * Unharness has been IDLE longer than the max-idle window (default 1 hour; override
+    via ``UNHARNESS_CLAUDE_BASE_SESSION_MAX_IDLE_SECONDS``) as of this dispatch — after
+    a long idle the base's forkable cache has expired anyway, so a fresh base costs
+    nothing extra AND picks up any interim updates. The idle duration is MEASURED BY
+    THE CALLER (Unharness's supervisor, across all node activity) and passed in; when
+    it is unknown (None) the idle gate is simply skipped (raw-1368).
+This is BEST-EFFORT: any failure means the caller simply runs the task as a plain new
+session (no fork), never blocking work.
 
 Store format: a single JSON object ``{"session_id", "created_epoch", "source_jsonl"}``.
 Default path ``~/.claude_code_cli_runner/base_session.json`` (overridable for tests via
@@ -34,7 +43,11 @@ UNIVERSAL_INIT_PROMPT = (
     "{initialization-confirmed:true}"
 )
 
-DEFAULT_BASE_SESSION_MAX_AGE_DAYS = 5.0
+DEFAULT_BASE_SESSION_MAX_AGE_DAYS = 3.0
+# After Unharness has been idle this long as of a dispatch, the warm base's forkable
+# cache has expired anyway, so the next task regenerates a fresh base (raw-1362). One
+# hour, matching the observed ~30–60 min warm-cache window with headroom.
+DEFAULT_BASE_SESSION_MAX_IDLE_SECONDS = 60.0 * 60.0
 _DEFAULT_STORE_DIR = os.path.join(os.path.expanduser("~"), ".claude_code_cli_runner")
 _DEFAULT_STORE_FILENAME = "base_session.json"
 _LOCK = threading.Lock()
@@ -60,6 +73,21 @@ def resolve_base_session_max_age_seconds() -> float:
         except (TypeError, ValueError):
             days = DEFAULT_BASE_SESSION_MAX_AGE_DAYS
     return days * 24.0 * 60.0 * 60.0
+
+
+def resolve_base_session_max_idle_seconds() -> float:
+    """Max Unharness idle time (seconds) before the base is regenerated on the next
+    dispatch (raw-1362: default 1 hour), overridable via
+    ``UNHARNESS_CLAUDE_BASE_SESSION_MAX_IDLE_SECONDS``. A malformed value falls back to
+    the default rather than crashing."""
+    raw = os.environ.get("UNHARNESS_CLAUDE_BASE_SESSION_MAX_IDLE_SECONDS")
+    seconds = DEFAULT_BASE_SESSION_MAX_IDLE_SECONDS
+    if raw:
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            seconds = DEFAULT_BASE_SESSION_MAX_IDLE_SECONDS
+    return seconds
 
 
 def _read_store(store_path: str) -> "dict | None":
@@ -96,14 +124,30 @@ def _write_store(store_path: str, record: dict) -> None:
     os.replace(tmp_path, store_path)
 
 
-def _base_session_is_fresh(record: "dict | None", *, now_epoch: float) -> bool:
-    """True when ``record`` exists, has a locatable source jsonl, and is younger than
-    the configured max age."""
+def _base_session_is_fresh(
+    record: "dict | None",
+    *,
+    now_epoch: float,
+    unharness_idle_seconds: "float | None" = None,
+) -> bool:
+    """True when ``record`` exists, has a locatable source jsonl, is younger than the
+    configured max age, AND Unharness has not been idle past the max-idle window.
+
+    ``unharness_idle_seconds`` is how long Unharness had been idle (no node activity)
+    as of this dispatch, measured by the caller; None means unknown and skips the idle
+    gate (raw-1362/1368)."""
     if not record or not record.get("source_jsonl"):
         return False
     if not os.path.isfile(record["source_jsonl"]):
         return False
-    return (now_epoch - record["created_epoch"]) < resolve_base_session_max_age_seconds()
+    if (now_epoch - record["created_epoch"]) >= resolve_base_session_max_age_seconds():
+        return False
+    if (
+        unharness_idle_seconds is not None
+        and unharness_idle_seconds >= resolve_base_session_max_idle_seconds()
+    ):
+        return False
+    return True
 
 
 def ensure_fresh_base_session(
@@ -112,9 +156,14 @@ def ensure_fresh_base_session(
     session_jsonl_path_for,
     store_path: "str | None" = None,
     now_epoch: "float | None" = None,
+    unharness_idle_seconds: "float | None" = None,
 ) -> dict:
     """Return the current warm base session record, priming a new one first if none
-    exists or the existing one is stale/missing.
+    exists or the existing one is stale/missing/idle-expired.
+
+    ``unharness_idle_seconds`` (optional): how long Unharness had been idle across all
+    node activity as of this dispatch; when it exceeds the max-idle window the base is
+    regenerated even if still within its max age (raw-1362). None => idle gate skipped.
 
     Injected callables keep this pure/testable (no claude dependency here):
       * ``prime_base_session(base_session_id) -> None`` — run a self-completing claude
@@ -128,7 +177,11 @@ def ensure_fresh_base_session(
     now_epoch = time.time() if now_epoch is None else now_epoch
     with _LOCK:
         record = _read_store(store_path)
-        if _base_session_is_fresh(record, now_epoch=now_epoch):
+        if _base_session_is_fresh(
+            record,
+            now_epoch=now_epoch,
+            unharness_idle_seconds=unharness_idle_seconds,
+        ):
             return record
         # Missing or stale -> prime a fresh base with the universal init prompt.
         base_session_id = str(uuid.uuid4())

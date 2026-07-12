@@ -235,6 +235,7 @@ def _try_fork_task_from_base_session(
         base_record = claude_base_session.ensure_fresh_base_session(
             prime_base_session=prime_base_session,
             session_jsonl_path_for=session_jsonl_path_for,
+            unharness_idle_seconds=run_request.unharness_idle_seconds,
         )
         base_session_id = base_record["session_id"]
         base_source_jsonl = base_record["source_jsonl"]
