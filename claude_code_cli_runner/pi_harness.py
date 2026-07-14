@@ -38,6 +38,9 @@ from .harness_integration import (
     register_harness_integration,
 )
 from .request import TextBlock
+from .runner_provided_mcp_registry import (
+    split_assigned_tools_into_builtins_and_runner_mcps,
+)
 
 HARNESS_ID_PI = "pi"
 
@@ -192,13 +195,21 @@ class PiHarnessIntegration:
             if extension_path.strip():
                 argv += ["-e", extension_path.strip()]
         # Per-session tool allowlist: only when the session assigns an exclusive
-        # whitelist. An empty assigned list => --tools "" (no tools, the API-only
-        # posture for ingest tasks); a populated list => exactly those tools.
+        # whitelist. Runner-provided MCP names (e.g. unharness-api) are HELD OUT of
+        # the harness tool flag — they are not native Pi tools; the runner mediates
+        # them. So --tools carries only the BUILT-IN names: an empty built-in set
+        # => --tools "" (no native tools, the API-only posture for ingest tasks);
+        # a populated set => exactly those native tools.
         if (
             run_request.restrict_to_assigned_tools_as_whitelist
             and run_request.assigned_tool_list is not None
         ):
-            argv += ["--tools", ",".join(run_request.assigned_tool_list)]
+            builtin_tool_names, _runner_mcp_names = (
+                split_assigned_tools_into_builtins_and_runner_mcps(
+                    run_request.assigned_tool_list
+                )
+            )
+            argv += ["--tools", ",".join(builtin_tool_names)]
         # Session-start steering appended to Pi's system prompt (e.g. the pointer
         # to the VM environment docs when bash is enabled).
         if run_request.append_system_prompt_text:
