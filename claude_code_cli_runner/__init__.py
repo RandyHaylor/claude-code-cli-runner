@@ -47,6 +47,7 @@ from .harness_integration import (
 # Importing each per-harness module registers its integration in the registry.
 from . import claude_harness as _claude_harness  # noqa: F401
 from . import opencode_harness as _opencode_harness  # noqa: F401
+from . import pi_harness as _pi_harness  # noqa: F401
 
 __all__ = [
     "run_claude_code_task",
