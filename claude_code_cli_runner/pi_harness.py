@@ -152,6 +152,10 @@ class PiHarnessIntegration:
         supports_session_prime_and_fork=False,
         supports_multimodal_input=False,
         supports_mid_run_command_injection=False,
+        # Pi is always full-auto and has no operator permission channel: a
+        # permission_mode (e.g. from a collaborative task) is silently ignored
+        # rather than rejected, so such a task still dispatches.
+        ignores_unsupported_permission_mode=True,
     )
 
     def build_launch_command(self, run_request) -> List[str]:

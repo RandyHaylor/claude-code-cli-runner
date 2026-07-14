@@ -25,6 +25,14 @@ def _pi_run_request(**overrides) -> RunRequest:
     return RunRequest(**base)
 
 
+def test_pi_ignores_permission_mode_instead_of_raising():
+    # A collaborative task carries a permission_mode; pi has no operator permission
+    # protocol but is always full-auto, so it must SILENTLY DROP the posture (not raise)
+    # and still build a valid request.
+    run_request = _pi_run_request(permission_mode="acceptEdits")
+    assert run_request.permission_mode is None
+
+
 def test_pi_is_registered_with_reduced_capabilities():
     caps = get_harness_integration(HARNESS_ID_PI).capabilities
     assert caps.supports_operator_permission_mode is False

@@ -287,14 +287,17 @@ class RunRequest:
             )
         capabilities = integration.capabilities
         if self.permission_mode and not capabilities.supports_operator_permission_mode:
-            # No operator permission-escalation protocol on this harness, so an
-            # operator-gated posture cannot be honoured — refuse loudly rather than
-            # run ungated. Use dangerously_skip_permissions for a full-auto run.
-            raise ValueError(
-                "the %s harness does not support permission_mode (no operator "
-                "permission protocol); use dangerously_skip_permissions for a "
-                "full-auto run" % self.harness
-            )
+            # No operator permission-escalation protocol on this harness. A harness
+            # that is always full-auto (e.g. pi) SILENTLY IGNORES the posture so the
+            # run still dispatches; otherwise refuse loudly rather than run ungated.
+            if capabilities.ignores_unsupported_permission_mode:
+                self.permission_mode = None
+            else:
+                raise ValueError(
+                    "the %s harness does not support permission_mode (no operator "
+                    "permission protocol); use dangerously_skip_permissions for a "
+                    "full-auto run" % self.harness
+                )
         if (
             self.session_id
             and not self.resume_session

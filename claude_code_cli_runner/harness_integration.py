@@ -50,6 +50,11 @@ class HarnessCapabilities:
     supports_multimodal_input: bool
     # Leaves stdin open after the prompt so mid-run operator command injection works.
     supports_mid_run_command_injection: bool
+    # When a permission_mode is set but this harness has no operator permission
+    # protocol: True => SILENTLY IGNORE it (harness is always full-auto — e.g. pi);
+    # False => reject it (refuse to run ungated — e.g. opencode). Only consulted when
+    # supports_operator_permission_mode is False. Defaults False (reject).
+    ignores_unsupported_permission_mode: bool = False
 
 
 @dataclass(frozen=True)
