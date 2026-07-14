@@ -2,10 +2,11 @@
 ``HarnessIntegration`` on Pi's own terms, NOT modeled on any other harness.
 
 Pi (``@earendil-works/pi-coding-agent``) is driven non-interactively in JSON
-event mode: ``pi --print --mode json … `` streams LF-delimited JSON events and
-exits on its own. Verified behavior (pi 0.74.2):
-  * The prompt is read from STDIN in --print mode (so the runner delivers it over
-    stdin, its standard path; nothing is placed on the process argv).
+event mode: ``pi --mode json`` (NOT --print) streams LF-delimited JSON events AS
+THEY HAPPEN and exits on its own. (--print buffers until the full response is
+ready — no live stream — so it is deliberately omitted.) Verified behavior (pi 0.74.2):
+  * The prompt is read from STDIN (so the runner delivers it over stdin, its
+    standard path; nothing is placed on the process argv). Verified live-streaming.
   * A fresh run (no --session) makes Pi MINT its own session id, reported on the
     first ``{"type":"session","id":...}`` event; a later turn resumes it with
     ``--session <id>``. There is no caller-chosen create id.
@@ -172,7 +173,10 @@ class PiHarnessIntegration:
 
         argv = [
             pi_command,
-            "--print",
+            # --mode json (WITHOUT --print) is the streaming, non-interactive form:
+            # it emits LF-delimited JSON events (message_update text deltas, tool
+            # events, completion) AS THEY HAPPEN, so the runner streams them live.
+            # --print buffers until the full response is ready (no live stream).
             "--mode",
             "json",
             "--provider",
@@ -230,7 +234,7 @@ class PiHarnessIntegration:
         write_stream_json_message,
         permission_prompt_enabled,
     ) -> PromptDeliveryOutcome:
-        # Pi reads the prompt as plain text from stdin in --print mode and starts
+        # Pi reads the prompt as plain text from stdin (--mode json) and starts
         # on EOF; write the text blocks and close stdin (no mid-run injection).
         prompt_text = "\n\n".join(
             block.text for block in input_content if isinstance(block, TextBlock)
@@ -259,7 +263,7 @@ class PiHarnessIntegration:
         # Pi runs ONE process per turn and has already exited by now. Continue the
         # SAME Pi session as a fresh `pi --session <id>` run, delivering the
         # follow-up message on the new process's stdin (Pi reads the prompt from
-        # stdin in --print mode). Return the NEW process for the core to read.
+        # stdin, --mode json). Return the NEW process for the core to read.
         try:
             current_process.wait(timeout=30)
         except Exception:  # noqa: BLE001 — never block the loop on a stuck exit

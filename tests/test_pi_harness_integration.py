@@ -59,7 +59,9 @@ def test_launch_command_shape_fresh_run(monkeypatch):
     monkeypatch.delenv("PI_COMMAND", raising=False)
     argv = get_harness_integration(HARNESS_ID_PI).build_launch_command(_pi_run_request())
     assert argv[0] == "pi"
-    assert "--print" in argv and "--mode" in argv
+    # streaming form: --mode json WITHOUT --print (which would buffer)
+    assert "--print" not in argv
+    assert argv[argv.index("--mode") + 1] == "json"
     # provider/model come from the "ollama/..." model string
     assert argv[argv.index("--provider") + 1] == "ollama"
     assert argv[argv.index("--model") + 1] == "gemma4-31b-jang-q3:latest"
