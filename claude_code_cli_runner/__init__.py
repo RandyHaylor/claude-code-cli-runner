@@ -38,6 +38,15 @@ from .request import (
 from .result import RunResult
 from .runner import run_claude_code_task
 from .auth_status import check_claude_auth_status, CLAUDE_AUTH_STATUS_COMMAND
+from .harness_integration import (
+    get_harness_integration,
+    get_harness_integration_or_none,
+    known_harness_ids,
+)
+
+# Importing each per-harness module registers its integration in the registry.
+from . import claude_harness as _claude_harness  # noqa: F401
+from . import opencode_harness as _opencode_harness  # noqa: F401
 
 __all__ = [
     "run_claude_code_task",
@@ -62,6 +71,9 @@ __all__ = [
     "live_log_path",
     "control_channel_path",
     "run_status_path",
+    "get_harness_integration",
+    "get_harness_integration_or_none",
+    "known_harness_ids",
 ]
 
 # The runner code version reported by GET /version — bumped on every
