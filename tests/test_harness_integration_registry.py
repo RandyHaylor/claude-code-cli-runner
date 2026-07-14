@@ -10,13 +10,15 @@ from claude_code_cli_runner.harness_integration import (
     get_harness_integration_or_none,
     known_harness_ids,
 )
-from claude_code_cli_runner.claude_harness import HARNESS_ID_CLAUDE_CLI
-from claude_code_cli_runner.opencode_harness import HARNESS_ID_OPENCODE_CLI
-from claude_code_cli_runner.request import RunRequest, TextBlock, HARNESS_OPENCODE_CLI
-from claude_code_cli_runner.transports import (
+from claude_code_cli_runner.claude_harness import (
+    HARNESS_ID_CLAUDE_CLI,
     build_base_claude_argv,
+)
+from claude_code_cli_runner.opencode_harness import (
+    HARNESS_ID_OPENCODE_CLI,
     build_base_opencode_argv,
 )
+from claude_code_cli_runner.request import RunRequest, TextBlock, HARNESS_OPENCODE_CLI
 
 
 def _make_run_request(**overrides) -> RunRequest:

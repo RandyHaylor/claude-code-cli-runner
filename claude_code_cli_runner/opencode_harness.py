@@ -12,16 +12,49 @@ from __future__ import annotations
 
 from typing import List
 
-from .request import TextBlock
+from typing import List
+
+from .request import RunRequest, TextBlock
 from .harness_integration import (
     HarnessCapabilities,
     PromptDeliveryOutcome,
     register_harness_integration,
 )
 from .opencode_event_translation import OpencodeEventToClaudeChunkTranslator
-from .transports import build_base_opencode_argv
 
 HARNESS_ID_OPENCODE_CLI = "opencode_cli"
+
+
+def build_base_opencode_argv(run_request: RunRequest) -> "list[str]":
+    """The streaming opencode argv (no prompt positional).
+
+    ``opencode run --format json`` emits raw JSON events; the prompt is
+    delivered over stdin (verified: opencode reads the message from stdin when
+    no positional is given), so it never lands on a process table — the same
+    privacy contract as the claude argv.
+    """
+    argv = [
+        run_request.opencode_command,
+        "run",
+        "--format",
+        "json",
+        # Emit thinking/reasoning blocks as stream events. Some local models
+        # (observed: ollama gemma4:e4b) put their ENTIRE answer in a reasoning
+        # part and stop; without this flag opencode emits no event for it and
+        # the run looks blank.
+        "--thinking",
+    ]
+    if run_request.dangerously_skip_permissions:
+        # opencode's full-auto switch: auto-approve anything not explicitly
+        # denied. The sandbox/VM boundary is the safety layer, exactly as with
+        # claude --dangerously-skip-permissions.
+        argv.append("--auto")
+    if run_request.model:
+        argv += ["--model", run_request.model]
+    if run_request.session_id and run_request.resume_session:
+        argv += ["--session", run_request.session_id]
+    argv.extend(run_request.extra_cli_flags)
+    return argv
 
 
 class _OpencodeOutputEventNormalizer:

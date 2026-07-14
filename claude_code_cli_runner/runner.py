@@ -71,8 +71,8 @@ from .result import RunResult
 from . import session_registry
 from . import claude_session_store
 from . import claude_base_session
-from .transports import (
-    build_command_for,
+from .transports import build_command_for
+from .claude_harness import (
     build_fork_claude_argv,
     build_priming_claude_argv,
 )

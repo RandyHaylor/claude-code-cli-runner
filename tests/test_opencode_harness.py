@@ -17,10 +17,8 @@ from claude_code_cli_runner.request import (
     HARNESS_OPENCODE_CLI,
     ImageBlock,
 )
-from claude_code_cli_runner.transports import (
-    build_base_harness_argv,
-    build_base_opencode_argv,
-)
+from claude_code_cli_runner.transports import build_base_harness_argv
+from claude_code_cli_runner.opencode_harness import build_base_opencode_argv
 
 STUB_OPENCODE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "stub_streaming_opencode.py"
