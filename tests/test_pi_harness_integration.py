@@ -130,3 +130,58 @@ def test_normalizer_maps_pi_events_to_internal_chunks():
     assert result["session_id"] == "sess-9"
     assert result["harness"] == "pi"
     assert result["usage"]["input_tokens"] == 100
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.written = ""
+        self.closed = False
+
+    def write(self, text):
+        self.written += text
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeProcess:
+    def __init__(self):
+        self.stdin = _FakeStdin()
+        self.waited = False
+
+    def wait(self, timeout=None):
+        self.waited = True
+        return 0
+
+
+def test_pi_followup_turn_launches_fresh_resume_process(monkeypatch):
+    monkeypatch.delenv("PI_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_EXTENSION_PATHS", raising=False)
+    integration = get_harness_integration(HARNESS_ID_PI)
+    exited_process = _FakeProcess()
+    launched = {}
+
+    def fake_launch_harness_subprocess(argv):
+        launched["argv"] = argv
+        return _FakeProcess()
+
+    followup_process = integration.deliver_followup_turn(
+        current_process=exited_process,
+        message_text="<tool result here>",
+        session_id="sess-abc",
+        run_request=_pi_run_request(),
+        launch_harness_subprocess=fake_launch_harness_subprocess,
+    )
+
+    # The exited per-turn process is awaited, and a NEW resume process is launched.
+    assert exited_process.waited is True
+    assert followup_process is not exited_process
+    argv = launched["argv"]
+    assert argv[argv.index("--session") + 1] == "sess-abc"
+    # The tool result is delivered on the new process's stdin, then closed.
+    assert followup_process.stdin.written == "<tool result here>"
+    assert followup_process.stdin.closed is True
+

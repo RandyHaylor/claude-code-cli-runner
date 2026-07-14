@@ -467,27 +467,36 @@ def _stream_one_run(
             str(name): str(value)
             for name, value in run_request.run_environment_variables.items()
         })
-    process = subprocess.Popen(
-        argv,
-        cwd=workspace_directory,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=harness_environment,
+    def launch_harness_subprocess(subprocess_argv):
         # OWN PROCESS GROUP (raw-821): the harness and every subprocess it
         # spawns live in one killable group, so terminating a run can never
         # leave stray harness children churning after the runner is gone.
-        start_new_session=True,
-    )
+        return subprocess.Popen(
+            subprocess_argv,
+            cwd=workspace_directory,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=harness_environment,
+            start_new_session=True,
+        )
+
+    process = launch_harness_subprocess(argv)
+    # The CURRENT turn's harness process. A per-turn harness (e.g. pi) SWAPS this
+    # when it continues the session for a follow-up turn; the watchdogs, control
+    # channel, kill, and stderr capture all read the live process via this holder
+    # so they follow the swap. A single-streaming harness (claude) never swaps it.
+    active_harness_process_holder = {"process": process}
 
     def write_stream_json_message(message: dict) -> None:
-        if process.stdin is None:
+        live_process = active_harness_process_holder["process"]
+        if live_process.stdin is None:
             return
         try:
-            process.stdin.write(json.dumps(message) + "\n")
-            process.stdin.flush()
+            live_process.stdin.write(json.dumps(message) + "\n")
+            live_process.stdin.flush()
         except (BrokenPipeError, ValueError, OSError):
             pass
 
@@ -581,7 +590,7 @@ def _stream_one_run(
             if idle_for > idle_budget:
                 idle_watchdog_shared_state["idle_killed"] = True
                 _reflect(status_path, RUN_STATE_IDLE_KILLED)
-                _terminate_process(process)
+                _terminate_process(active_harness_process_holder["process"])
                 return
 
     if run_request.idle_kill_seconds:
@@ -612,10 +621,11 @@ def _stream_one_run(
             if signal_age is not None and signal_age > timeout_seconds:
                 keep_alive_shared_state["keep_alive_killed"] = True
                 _reflect(status_path, RUN_STATE_KEEP_ALIVE_LOST_KILLED)
+                live_process = active_harness_process_holder["process"]
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    os.killpg(live_process.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
-                    process.kill()
+                    live_process.kill()
                 return
 
     if run_request.keep_alive_expected:
@@ -856,8 +866,19 @@ def _stream_one_run(
         os.fsync(log_handle.fileno())
 
     captured_harness_stderr = ""
+    # Read the run's output as a sequence of TURNS. Each line comes from the
+    # CURRENT turn's process; when the runner-mediated tool loop serves a tool and
+    # continues the session, the harness's deliver_followup_turn hands back the
+    # process to keep reading (the same streaming process for claude, a fresh
+    # per-turn process for pi), and we swap the line iterator to it. The loop body
+    # is harness-agnostic; only deliver_followup_turn knows the mechanism.
+    current_turn_line_iterator = iter(active_harness_process_holder["process"].stdout)
     try:
-        for raw_line in process.stdout:
+        while True:
+            try:
+                raw_line = next(current_turn_line_iterator)
+            except StopIteration:
+                break
             idle_watchdog_shared_state["last_stream_activity_monotonic"] = (
                 time.monotonic()
             )
@@ -937,7 +958,7 @@ def _stream_one_run(
                 )
                 log_handle.flush()
                 os.fsync(log_handle.fileno())
-                _terminate_process(process)
+                _terminate_process(active_harness_process_holder["process"])
                 break
 
             if result_seen:
@@ -995,9 +1016,25 @@ def _stream_one_run(
                     }) + "\n")
                     log_handle.flush()
                     os.fsync(log_handle.fileno())
-                write_stream_json_message(
-                    build_injected_user_message("\n\n".join(tool_result_message_texts))
+                followup_message_text = "\n\n".join(tool_result_message_texts)
+                followup_session_id = (
+                    final_result_event.get("session_id")
+                    if isinstance(final_result_event, dict)
+                    else None
                 )
+                # Continue the session via the harness's OWN mechanism (shared
+                # surface): claude injects on its open stdin and returns the same
+                # process; pi runs a fresh `pi --session <id>` turn and returns the
+                # new process. The loop just keeps reading whatever it hands back.
+                followup_process = harness_integration.deliver_followup_turn(
+                    current_process=active_harness_process_holder["process"],
+                    message_text=followup_message_text,
+                    session_id=followup_session_id,
+                    run_request=run_request,
+                    launch_harness_subprocess=launch_harness_subprocess,
+                )
+                active_harness_process_holder["process"] = followup_process
+                current_turn_line_iterator = iter(followup_process.stdout)
                 completed_tool_round_trips += 1
                 result_seen = False
                 final_result_event = None
@@ -1044,21 +1081,22 @@ def _stream_one_run(
         os.fsync(log_handle.fileno())
         log_handle.close()
         exit_code = None
+        final_turn_process = active_harness_process_holder["process"]
         if operator_ended or result_seen:
-            _terminate_process(process)
+            _terminate_process(final_turn_process)
         else:
             try:
-                exit_code = process.wait(timeout=30)
+                exit_code = final_turn_process.wait(timeout=30)
             except subprocess.TimeoutExpired:
-                _terminate_process(process)
+                _terminate_process(final_turn_process)
         if exit_code is None:
-            exit_code = process.poll()
+            exit_code = final_turn_process.poll()
         # Drain the harness's stderr so a failed run can report WHY it failed (an
         # error_during_execution result carries no message). Best-effort: the pipe
         # was always opened but never read, so the real error text was lost.
         try:
-            if process.stderr is not None:
-                captured_harness_stderr = (process.stderr.read() or "").strip()
+            if final_turn_process.stderr is not None:
+                captured_harness_stderr = (final_turn_process.stderr.read() or "").strip()
         except (OSError, ValueError):
             captured_harness_stderr = ""
 

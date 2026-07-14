@@ -90,3 +90,41 @@ def test_claude_normalizer_is_identity():
     normalizer = integration.create_output_event_normalizer()
     chunk = {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
     assert normalizer.normalize(chunk) == [chunk]
+
+
+class _CapturingStdin:
+    def __init__(self):
+        self.written = ""
+
+    def write(self, text):
+        self.written += text
+
+    def flush(self):
+        pass
+
+
+class _SameProcessStub:
+    def __init__(self):
+        self.stdin = _CapturingStdin()
+
+
+def test_claude_followup_injects_on_same_process_and_returns_it():
+    integration = get_harness_integration(HARNESS_ID_CLAUDE_CLI)
+    process = _SameProcessStub()
+
+    def unused_launch(argv):  # claude must NOT launch a new process
+        raise AssertionError("claude follow-up must reuse the same process")
+
+    returned = integration.deliver_followup_turn(
+        current_process=process,
+        message_text="tool result text",
+        session_id="whatever",
+        run_request=_make_run_request(),
+        launch_harness_subprocess=unused_launch,
+    )
+    assert returned is process
+    import json
+
+    injected = json.loads(process.stdin.written)
+    # a stream-json user message carrying the tool result text
+    assert "tool result text" in json.dumps(injected)

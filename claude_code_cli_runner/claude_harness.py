@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import List
 
-from .content import build_user_message
+from .content import build_injected_user_message, build_user_message
 from .harness_integration import (
     HarnessCapabilities,
     IdentityOutputEventNormalizer,
@@ -203,6 +203,28 @@ class ClaudeHarnessIntegration:
 
     def create_output_event_normalizer(self) -> IdentityOutputEventNormalizer:
         return IdentityOutputEventNormalizer()
+
+    def deliver_followup_turn(
+        self,
+        *,
+        current_process,
+        message_text,
+        session_id,
+        run_request,
+        launch_harness_subprocess,
+    ):
+        # claude runs ONE long-lived streaming process: inject the follow-up as a
+        # stream-json user message on its still-open stdin; the same process keeps
+        # streaming the next turn.
+        if current_process.stdin is not None:
+            try:
+                current_process.stdin.write(
+                    json.dumps(build_injected_user_message(message_text)) + "\n"
+                )
+                current_process.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+        return current_process
 
 
 register_harness_integration(ClaudeHarnessIntegration())

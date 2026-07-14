@@ -101,6 +101,33 @@ class HarnessIntegration(Protocol):
     def create_output_event_normalizer(self) -> HarnessOutputEventNormalizer:
         ...
 
+    def deliver_followup_turn(
+        self,
+        *,
+        current_process,
+        message_text,
+        session_id,
+        run_request,
+        launch_harness_subprocess,
+    ):
+        """Continue the run's session with an additional user message (the shared
+        surface the core's runner-mediated tool loop calls after it serves a tool
+        request). Returns the process the core should keep reading turn output from.
+
+        Each harness continues its own way: a harness with a long-lived streaming
+        process writes the message to that process's open stdin and returns the
+        SAME process; a harness that runs one process per turn waits for the
+        current process to exit and launches a fresh resume-the-session process
+        (via ``launch_harness_subprocess``), returning the NEW process. The core
+        tool loop neither knows nor cares which — it just reads the returned
+        process's output.
+
+        ``launch_harness_subprocess(argv) -> subprocess.Popen`` launches a process
+        with the run's cwd + environment (provided by the core so a per-turn
+        harness reuses the exact launch posture).
+        """
+        ...
+
 
 # --- registry ---------------------------------------------------------------
 # harness id -> the single integration instance. Integrations register themselves

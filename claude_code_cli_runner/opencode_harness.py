@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from typing import List
 
+import json
 from typing import List
 
+from .content import build_injected_user_message
 from .request import RunRequest, TextBlock
 from .harness_integration import (
     HarnessCapabilities,
@@ -106,6 +108,28 @@ class OpencodeHarnessIntegration:
 
     def create_output_event_normalizer(self) -> _OpencodeOutputEventNormalizer:
         return _OpencodeOutputEventNormalizer()
+
+    def deliver_followup_turn(
+        self,
+        *,
+        current_process,
+        message_text,
+        session_id,
+        run_request,
+        launch_harness_subprocess,
+    ):
+        # opencode closed stdin to start work, so a follow-up injection is
+        # best-effort (dropped on the closed pipe); the same process is returned.
+        # (opencode is not driven with the runner-mediated tool loop in practice.)
+        if current_process.stdin is not None:
+            try:
+                current_process.stdin.write(
+                    json.dumps(build_injected_user_message(message_text)) + "\n"
+                )
+                current_process.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+        return current_process
 
 
 register_harness_integration(OpencodeHarnessIntegration())

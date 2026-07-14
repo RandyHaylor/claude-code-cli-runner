@@ -28,6 +28,7 @@ prefix becomes --provider and the remainder --model.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from typing import List
 
@@ -230,6 +231,37 @@ class PiHarnessIntegration:
 
     def create_output_event_normalizer(self) -> PiOutputEventNormalizer:
         return PiOutputEventNormalizer()
+
+    def deliver_followup_turn(
+        self,
+        *,
+        current_process,
+        message_text,
+        session_id,
+        run_request,
+        launch_harness_subprocess,
+    ):
+        # Pi runs ONE process per turn and has already exited by now. Continue the
+        # SAME Pi session as a fresh `pi --session <id>` run, delivering the
+        # follow-up message on the new process's stdin (Pi reads the prompt from
+        # stdin in --print mode). Return the NEW process for the core to read.
+        try:
+            current_process.wait(timeout=30)
+        except Exception:  # noqa: BLE001 — never block the loop on a stuck exit
+            pass
+        resume_run_request = dataclasses.replace(
+            run_request, session_id=session_id, resume_session=True
+        )
+        followup_argv = self.build_launch_command(resume_run_request)
+        followup_process = launch_harness_subprocess(followup_argv)
+        if followup_process.stdin is not None:
+            try:
+                followup_process.stdin.write(message_text)
+                followup_process.stdin.flush()
+                followup_process.stdin.close()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+        return followup_process
 
 
 register_harness_integration(PiHarnessIntegration())
