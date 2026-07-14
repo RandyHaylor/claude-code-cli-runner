@@ -56,7 +56,7 @@ from .live_files import (
 )
 from .harness_activity_events import derive_harness_activity_event
 from .harness_integration import get_harness_integration
-from .request import HARNESS_OPENCODE_CLI, RunRequest, TextBlock
+from .request import RunRequest, TextBlock
 from .runner_provided_mcp_registry import (
     DigestibleToolNameUnknown,
     split_assigned_tools_into_builtins_and_runner_mcps,
@@ -109,17 +109,22 @@ def run_claude_code_task(
     if build_command is None:
         build_command = build_command_for
 
+    # The prime-once/fork-per-task session-reuse, resume-failure fallback, and
+    # warm-base-fork paths ALL depend on a harness that supports caller-chosen
+    # session ids + an on-disk session store (declared as one capability). A
+    # harness without it simply prepends the chunk inline (always correct, just
+    # no cache reuse) and runs a single plain turn.
+    harness_supports_session_prime_and_fork = get_harness_integration(
+        run_request.harness
+    ).capabilities.supports_session_prime_and_fork
+
     # An EXPLICIT session id (resume-on-reply, collaborative turns) owns the
     # session lifecycle itself, so it never goes through the prime/fork reuse
     # path: run a single streaming turn whose argv carries --session-id/--resume.
     reuse = run_request.reusable_context
     if run_request.session_id:
         reuse = None
-    if reuse is not None and run_request.harness == HARNESS_OPENCODE_CLI:
-        # The prime-once/fork-per-task session-reuse path is a claude-CLI
-        # contract (--session-id/--resume/--fork-session with claude's on-disk
-        # session store). For opencode the chunk is simply prepended inline —
-        # always correct, just without cache reuse.
+    if reuse is not None and not harness_supports_session_prime_and_fork:
         reuse = None
     if reuse is not None and run_request.enable_session_reuse:
         return _run_with_session_reuse(
@@ -135,9 +140,10 @@ def run_claude_code_task(
     # Deterministic pre-check (no stderr parsing): if the transcript jsonl is missing,
     # run a FRESH session with the caller-supplied full fallback prompt instead of
     # failing; claude mints the new id and it is captured on the normal result path.
-    # CLAUDE-ONLY (adapter isolation); requires the caller to have sent the prompt.
+    # Gated on the session-prime/fork capability (adapter isolation); requires the
+    # caller to have sent the prompt.
     if (
-        run_request.harness != HARNESS_OPENCODE_CLI
+        harness_supports_session_prime_and_fork
         and run_request.resume_session
         and run_request.session_id
         and run_request.resume_fallback_prompt
@@ -172,7 +178,7 @@ def run_claude_code_task(
     # of paying the full session-creation cost. CLAUDE-ONLY (adapter isolation),
     # env-gated (default on), best-effort: any failure falls through to a plain run.
     if (
-        run_request.harness != HARNESS_OPENCODE_CLI
+        harness_supports_session_prime_and_fork
         and not run_request.resume_session
         and not build_command_was_injected
         and _claude_base_session_fork_enabled()
