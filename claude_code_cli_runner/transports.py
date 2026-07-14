@@ -16,7 +16,6 @@ import subprocess
 
 from .request import (
     HARNESS_CLAUDE_CLI,
-    HARNESS_OPENCODE_CLI,
     LOCATION_LOCAL_SUBPROCESS,
     LOCATION_REMOTE_HOST,
     LOCATION_VM_OVER_SSH,
@@ -160,10 +159,11 @@ def build_base_opencode_argv(run_request: RunRequest) -> "list[str]":
 
 
 def build_base_harness_argv(run_request: RunRequest) -> "list[str]":
-    """The ONLY place the harness choice branches into an argv builder."""
-    if run_request.harness == HARNESS_OPENCODE_CLI:
-        return build_base_opencode_argv(run_request)
-    return build_base_claude_argv(run_request)
+    """Build the launch argv by asking the request's harness integration — no
+    harness conditional here; each harness owns its own argv construction."""
+    from .harness_integration import get_harness_integration
+
+    return get_harness_integration(run_request.harness).build_launch_command(run_request)
 
 
 def build_priming_claude_argv(

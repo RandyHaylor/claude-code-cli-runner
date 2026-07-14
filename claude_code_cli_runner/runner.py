@@ -27,7 +27,6 @@ from .content import (
     build_initialize_control_request,
     build_injected_user_message,
     build_permission_control_response,
-    build_user_message,
     extract_text_only,
     list_produced_artifacts,
     snapshot_workspace_files,
@@ -56,7 +55,7 @@ from .live_files import (
     run_status_path,
 )
 from .harness_activity_events import derive_harness_activity_event
-from .opencode_event_translation import OpencodeEventToClaudeChunkTranslator
+from .harness_integration import get_harness_integration
 from .request import HARNESS_OPENCODE_CLI, RunRequest, TextBlock
 from .runner_provided_mcp_registry import (
     DigestibleToolNameUnknown,
@@ -486,37 +485,27 @@ def _stream_one_run(
         except (BrokenPipeError, ValueError, OSError):
             pass
 
+    # The harness integration owns per-run output normalization (identity for a
+    # harness whose stdout already IS the internal chunk shape) and how the prompt
+    # is delivered on that harness's own terms.
+    harness_integration = get_harness_integration(run_request.harness)
+    output_event_normalizer = harness_integration.create_output_event_normalizer()
+
     # Live tool-permission escalation via the CLI's can_use_tool control protocol
     # is active only when a permission posture is set (transports launches the CLI
     # with --permission-prompt-tool stdio in that case). Send the one-time
     # initialize handshake the CLI expects BEFORE the prompt (as the Agent SDK does).
-    running_opencode_harness = run_request.harness == HARNESS_OPENCODE_CLI
-    opencode_event_translator = (
-        OpencodeEventToClaudeChunkTranslator() if running_opencode_harness else None
-    )
     permission_prompt_enabled = bool(getattr(run_request, "permission_mode", None))
     if permission_prompt_enabled:
         write_stream_json_message(build_initialize_control_request())
 
-    if running_opencode_harness:
-        # opencode reads the prompt as PLAIN TEXT from stdin and starts on EOF —
-        # write the text blocks and CLOSE stdin. (Consequence: mid-run
-        # send_command injection is a claude-CLI capability only; injected
-        # commands are dropped harmlessly on the closed pipe.)
-        prompt_text = "\n\n".join(
-            block.text for block in input_content if isinstance(block, TextBlock)
-        )
-        if process.stdin is not None:
-            try:
-                process.stdin.write(prompt_text)
-                process.stdin.flush()
-                process.stdin.close()
-            except (BrokenPipeError, ValueError, OSError):
-                pass
-    else:
-        # Deliver the multimodal prompt as a stdin stream-json user message. stdin
-        # stays OPEN afterwards so mid-run send_command injection still works.
-        write_stream_json_message(build_user_message(input_content))
+    harness_integration.deliver_prompt(
+        process=process,
+        input_content=input_content,
+        run_request=run_request,
+        write_stream_json_message=write_stream_json_message,
+        permission_prompt_enabled=permission_prompt_enabled,
+    )
 
     consumed_control_lines = 0
     paused = False
@@ -732,11 +721,8 @@ def _stream_one_run(
             log_handle.flush()
             os.fsync(log_handle.fileno())
             return
-        if opencode_event_translator is not None:
-            for translated_chunk in opencode_event_translator.translate(chunk):
-                record_chunk_and_update_run_bookkeeping(translated_chunk)
-            return
-        record_chunk_and_update_run_bookkeeping(chunk)
+        for normalized_chunk in output_event_normalizer.normalize(chunk):
+            record_chunk_and_update_run_bookkeeping(normalized_chunk)
 
     def drain_control_channel() -> bool:
         nonlocal consumed_control_lines, paused, operator_ended
