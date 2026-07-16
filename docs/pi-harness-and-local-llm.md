@@ -2,7 +2,19 @@
 
 The runner drives **Pi** (`@earendil-works/pi-coding-agent`) as a harness
 (`harness: "pi"`) for a lightweight local-LLM pathway: Pi makes OpenAI-style
-calls to a local **gemma4** model served by ollama.
+calls to a local **gemma4** model.
+
+> **UPDATE (serving backend + thinking-off lever changed):** gemma4 is now served
+> by **llama.cpp**, not ollama, for tool use. ollama's built-in gemma4 tool parser
+> leaks `<|tool_call|>`/`<|channel|>`/`<|tool_response|>` control tokens into the
+> `/v1` response (ollama/ollama#15798, WON'T-FIX), degenerating into runaway
+> `<|tool_response>` spam under streaming + multi-tool turns. Serving the same gguf
+> via llama.cpp with a corrected jinja chat template returns clean structured tool
+> calls (see the `pi-gemma4` repo for the llama-server command + template).
+> Consequently the thinking-off injection **`PI_REQUEST_PAYLOAD_INJECTION_JSON`**
+> changed: llama.cpp honors **`{"chat_template_kwargs":{"enable_thinking":false}}`**
+> and ignores ollama's `reasoning_enabled`. The value is set on the VM in
+> `restart_vm_runner.sh`. Verified live: clean tools, thinking off, task `done`.
 
 ## Thinking/reasoning off — done in Pi, no proxy
 
