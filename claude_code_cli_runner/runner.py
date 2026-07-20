@@ -763,6 +763,20 @@ def _stream_one_run(
                 # the awaiting loop below picks it up and writes the control_response.
                 pending_permission_decision = intent.get("decision")
             elif kind == CONTROL_END_AND_RETURN:
+                # GRACEFUL ABORT FIRST (optional per-harness hook, e.g. pi RPC's
+                # {"type":"abort"}): cancel the in-flight upstream generation cleanly
+                # BEFORE the process is terminated — this frees the backend immediately
+                # (verified: llama.cpp stops ~0.03s after a pi abort) without relying on
+                # the OS-kill of _terminate_process. No-op for harnesses without the hook.
+                abort_hook = getattr(harness_integration, "request_abort", None)
+                if callable(abort_hook):
+                    try:
+                        abort_hook(
+                            process=active_harness_process_holder["process"],
+                            write_stream_json_message=write_stream_json_message,
+                        )
+                    except Exception:
+                        pass
                 operator_ended = True
                 _reflect(status_path, RUN_STATE_OPERATOR_ENDED)
                 return True

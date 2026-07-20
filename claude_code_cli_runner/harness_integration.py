@@ -20,6 +20,14 @@ The core asks a harness integration for exactly these things:
   * ``create_output_event_normalizer()`` — a fresh per-run object that maps the
     harness's raw stdout events into the runner's internal chunk shapes.
 
+OPTIONAL hook (not part of the Protocol; the core calls it via ``getattr`` when
+present, so harnesses without it are unaffected):
+  * ``request_abort(*, process, write_stream_json_message)`` — gracefully cancel the
+    current in-flight operation WITHOUT killing the process (e.g. pi RPC's
+    ``{"type":"abort"}``). The core calls it on a control-channel end BEFORE it
+    terminates a one-shot task's process, so a harness that supports it frees the
+    backend cleanly instead of relying on the OS-kill.
+
 The runner's internal chunk shapes every normalizer must emit:
   1. ``{"type": "assistant", "message": {"content": [{"type": "text", ...}]}}``
   2. ``{"type": "stream_event", "event": {"type": "message_delta", "usage": {...}}}``

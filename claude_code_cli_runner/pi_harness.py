@@ -1,20 +1,24 @@
 """The Pi CLI harness integration — a fully isolated implementation of
 ``HarnessIntegration`` on Pi's own terms, NOT modeled on any other harness.
 
-Pi (``@earendil-works/pi-coding-agent``) is driven non-interactively in JSON
-event mode: ``pi --mode json`` (NOT --print) streams LF-delimited JSON events AS
-THEY HAPPEN and exits on its own. (--print buffers until the full response is
-ready — no live stream — so it is deliberately omitted.) Verified behavior (pi 0.74.2):
-  * The prompt is read from STDIN (so the runner delivers it over stdin, its
-    standard path; nothing is placed on the process argv). Verified live-streaming.
+Pi (``@earendil-works/pi-coding-agent``) is driven non-interactively in RPC mode:
+``pi --mode rpc`` keeps the process ALIVE with stdin OPEN, reading JSONL commands
+(one per LF) and streaming the SAME LF-delimited JSON events json mode does, AS THEY
+HAPPEN. Verified behavior (pi 0.74.2):
+  * The prompt is a JSONL command on STDIN: ``{"id":..,"type":"prompt","message":..}``;
+    stdin STAYS OPEN so follow-up turns and a graceful ``{"type":"abort"}`` can be sent
+    mid-run. Command acknowledgements arrive as ``{"type":"response",..}`` objects
+    (dropped by the normalizer — they are not agent events).
   * A fresh run (no --session) makes Pi MINT its own session id, reported on the
     first ``{"type":"session","id":...}`` event; a later turn resumes it with
     ``--session <id>``. There is no caller-chosen create id.
   * Final assistant text + token usage per turn arrive on ``turn_end``; the run's
     terminal marker is ``agent_end``.
+  * ``{"type":"abort"}`` cancels the current operation WITHOUT killing the process —
+    verified live (2026-07-20) to stop the upstream llama.cpp generation ~0.03s later.
 
 Pi is a reduced-capability harness: no operator permission protocol, mints its
-own session ids, no prime/fork reuse, text input only, stdin closed to start.
+own session ids, no prime/fork reuse, text input only; RPC mode keeps stdin open.
 
 Deployment configuration is taken from environment (the documented way a run is
 handed its tooling facts), never hard-coded:
@@ -29,8 +33,9 @@ prefix becomes --provider and the remainder --model.
 
 from __future__ import annotations
 
-import dataclasses
+import json
 import os
+import uuid
 from typing import List
 
 from .harness_integration import (
@@ -51,6 +56,24 @@ PI_SESSION_DIRECTORY_ENVIRONMENT_VARIABLE = "PI_SESSION_DIR"
 PI_EXTENSION_PATHS_ENVIRONMENT_VARIABLE = "PI_EXTENSION_PATHS"
 
 DEFAULT_PI_PROVIDER = "ollama"
+
+
+def _fresh_rpc_command_id() -> str:
+    """A short unique id echoed back on the command's response for correlation."""
+    return uuid.uuid4().hex
+
+
+def write_pi_rpc_command_line(process, command: dict) -> None:
+    """Write ONE RPC command as a single LF-terminated JSON line to pi's stdin (strict
+    JSONL framing — exactly one command per ``\\n``). Best-effort: a closed/broken stdin
+    is swallowed so a control action (abort / follow-up) never crashes the run."""
+    if process is None or getattr(process, "stdin", None) is None:
+        return
+    try:
+        process.stdin.write(json.dumps(command) + "\n")
+        process.stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        pass
 
 
 def split_model_string_into_provider_and_model(model_string, fallback_provider):
@@ -107,6 +130,13 @@ class PiOutputEventNormalizer:
             return []
         event_type = raw_chunk.get("type")
 
+        # RPC command acknowledgements (``{"type":"response","command":..,"success":..}``)
+        # are protocol bookkeeping for our prompt/abort/steer commands, NOT agent events
+        # — drop them so they never reach the internal chunk stream or the live log's
+        # event mapping. (json mode never emitted these.)
+        if event_type == "response":
+            return []
+
         if event_type == "session":
             session_id = raw_chunk.get("id")
             if isinstance(session_id, str) and session_id:
@@ -152,7 +182,10 @@ class PiHarnessIntegration:
         supports_caller_chosen_session_id=False,
         supports_session_prime_and_fork=False,
         supports_multimodal_input=False,
-        supports_mid_run_command_injection=False,
+        # RPC mode keeps stdin OPEN after the prompt, so mid-run command injection
+        # (prompt / steer / follow_up / abort) is possible — the graceful in-process
+        # abort path depends on this.
+        supports_mid_run_command_injection=True,
         # Pi is always full-auto and has no operator permission channel: a
         # permission_mode (e.g. from a collaborative task) is silently ignored
         # rather than rejected, so such a task still dispatches.
@@ -173,12 +206,15 @@ class PiHarnessIntegration:
 
         argv = [
             pi_command,
-            # --mode json (WITHOUT --print) is the streaming, non-interactive form:
-            # it emits LF-delimited JSON events (message_update text deltas, tool
-            # events, completion) AS THEY HAPPEN, so the runner streams them live.
-            # --print buffers until the full response is ready (no live stream).
+            # --mode rpc is the persistent, bidirectional streaming form: the process
+            # STAYS ALIVE with stdin OPEN, reading JSONL commands (prompt / steer /
+            # follow_up / abort) one per line and emitting the SAME LF-delimited event
+            # stream json mode does (message_update text deltas, tool events, turn_end,
+            # agent_end) live. This lets the runner send a graceful {"type":"abort"}
+            # that cancels the upstream llama.cpp generation without an OS-kill, and
+            # continue a session's follow-up turns in-process (no per-turn re-prefill).
             "--mode",
-            "json",
+            "rpc",
             "--provider",
             provider,
             "--session-dir",
@@ -234,19 +270,15 @@ class PiHarnessIntegration:
         write_stream_json_message,
         permission_prompt_enabled,
     ) -> PromptDeliveryOutcome:
-        # Pi reads the prompt as plain text from stdin (--mode json) and starts
-        # on EOF; write the text blocks and close stdin (no mid-run injection).
+        # RPC mode: send the prompt as a JSONL command and LEAVE stdin OPEN so the
+        # runner can inject follow-up turns and a graceful {"type":"abort"} later.
         prompt_text = "\n\n".join(
             block.text for block in input_content if isinstance(block, TextBlock)
         )
-        if process.stdin is not None:
-            try:
-                process.stdin.write(prompt_text)
-                process.stdin.flush()
-                process.stdin.close()
-            except (BrokenPipeError, ValueError, OSError):
-                pass
-        return PromptDeliveryOutcome(process_stdin_remains_open=False)
+        write_pi_rpc_command_line(
+            process, {"id": _fresh_rpc_command_id(), "type": "prompt", "message": prompt_text}
+        )
+        return PromptDeliveryOutcome(process_stdin_remains_open=True)
 
     def create_output_event_normalizer(self) -> PiOutputEventNormalizer:
         return PiOutputEventNormalizer()
@@ -260,27 +292,24 @@ class PiHarnessIntegration:
         run_request,
         launch_harness_subprocess,
     ):
-        # Pi runs ONE process per turn and has already exited by now. Continue the
-        # SAME Pi session as a fresh `pi --session <id>` run, delivering the
-        # follow-up message on the new process's stdin (Pi reads the prompt from
-        # stdin, --mode json). Return the NEW process for the core to read.
-        try:
-            current_process.wait(timeout=30)
-        except Exception:  # noqa: BLE001 — never block the loop on a stuck exit
-            pass
-        resume_run_request = dataclasses.replace(
-            run_request, session_id=session_id, resume_session=True
+        # RPC mode: the SAME process is still alive with stdin open, so continue the
+        # session IN-PROCESS by sending another prompt command — NO fresh --session
+        # spawn, NO re-prefill of the growing context. The turn just ended (the tool
+        # loop serves a request after agent_end), so the agent is idle and no
+        # streamingBehavior is required. Return the SAME process for the core to keep
+        # reading turn output from.
+        write_pi_rpc_command_line(
+            current_process,
+            {"id": _fresh_rpc_command_id(), "type": "prompt", "message": message_text},
         )
-        followup_argv = self.build_launch_command(resume_run_request)
-        followup_process = launch_harness_subprocess(followup_argv)
-        if followup_process.stdin is not None:
-            try:
-                followup_process.stdin.write(message_text)
-                followup_process.stdin.flush()
-                followup_process.stdin.close()
-            except (BrokenPipeError, ValueError, OSError):
-                pass
-        return followup_process
+        return current_process
+
+    def request_abort(self, *, process, write_stream_json_message) -> None:
+        """Send the RPC ``{"type":"abort"}`` command to gracefully cancel the current
+        operation (verified live 2026-07-20: llama.cpp stops generating ~0.03s later)
+        WITHOUT killing the process/session — the runner's control-channel end path
+        calls this before it terminates the one-shot task's process. Best-effort."""
+        write_pi_rpc_command_line(process, {"type": "abort"})
 
 
 register_harness_integration(PiHarnessIntegration())

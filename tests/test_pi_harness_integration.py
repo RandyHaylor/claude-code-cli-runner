@@ -3,6 +3,7 @@ on Pi's own terms, and Pi-event -> internal-chunk normalization."""
 
 from __future__ import annotations
 
+import json
 import os
 
 from claude_code_cli_runner.harness_integration import get_harness_integration
@@ -39,7 +40,8 @@ def test_pi_is_registered_with_reduced_capabilities():
     assert caps.supports_caller_chosen_session_id is False
     assert caps.supports_session_prime_and_fork is False
     assert caps.supports_multimodal_input is False
-    assert caps.supports_mid_run_command_injection is False
+    # RPC mode keeps stdin open, so mid-run command injection IS supported now.
+    assert caps.supports_mid_run_command_injection is True
 
 
 def test_model_string_split_into_provider_and_model():
@@ -59,9 +61,9 @@ def test_launch_command_shape_fresh_run(monkeypatch):
     monkeypatch.delenv("PI_COMMAND", raising=False)
     argv = get_harness_integration(HARNESS_ID_PI).build_launch_command(_pi_run_request())
     assert argv[0] == "pi"
-    # streaming form: --mode json WITHOUT --print (which would buffer)
+    # persistent bidirectional form: --mode rpc WITHOUT --print (which would buffer)
     assert "--print" not in argv
-    assert argv[argv.index("--mode") + 1] == "json"
+    assert argv[argv.index("--mode") + 1] == "rpc"
     # provider/model come from the "ollama/..." model string
     assert argv[argv.index("--provider") + 1] == "ollama"
     assert argv[argv.index("--model") + 1] == "gemma4-31b-jang-q3:latest"
@@ -103,6 +105,17 @@ def test_launch_command_empty_tool_whitelist_disables_all_tools(monkeypatch):
         _pi_run_request(assigned_tool_list=[], restrict_to_assigned_tools_as_whitelist=True)
     )
     assert argv[argv.index("--tools") + 1] == ""
+
+
+def test_normalizer_skips_rpc_command_response_objects():
+    # RPC command acknowledgements are protocol bookkeeping, not agent events.
+    normalizer = PiOutputEventNormalizer()
+    assert normalizer.normalize(
+        {"type": "response", "command": "prompt", "success": True}
+    ) == []
+    assert normalizer.normalize(
+        {"type": "response", "command": "abort", "success": True}
+    ) == []
 
 
 def test_normalizer_maps_pi_events_to_internal_chunks():
@@ -167,31 +180,62 @@ class _FakeProcess:
         return 0
 
 
-def test_pi_followup_turn_launches_fresh_resume_process(monkeypatch):
-    monkeypatch.delenv("PI_SESSION_DIR", raising=False)
-    monkeypatch.delenv("PI_EXTENSION_PATHS", raising=False)
+def _command_lines(fake_stdin):
+    """Parse the LF-delimited JSON command lines written to a fake stdin."""
+    return [json.loads(line) for line in fake_stdin.written.splitlines() if line.strip()]
+
+
+def test_deliver_prompt_sends_rpc_prompt_command_and_leaves_stdin_open():
     integration = get_harness_integration(HARNESS_ID_PI)
-    exited_process = _FakeProcess()
-    launched = {}
+    process = _FakeProcess()
+    outcome = integration.deliver_prompt(
+        process=process,
+        input_content=[TextBlock("do the thing")],
+        run_request=_pi_run_request(),
+        write_stream_json_message=lambda msg: None,
+        permission_prompt_enabled=False,
+    )
+    # stdin STAYS OPEN (RPC) so follow-ups / abort can be injected.
+    assert outcome.process_stdin_remains_open is True
+    assert process.stdin.closed is False
+    commands = _command_lines(process.stdin)
+    assert len(commands) == 1
+    assert commands[0]["type"] == "prompt"
+    assert commands[0]["message"] == "do the thing"
+    assert commands[0].get("id")  # correlation id present
+
+
+def test_pi_followup_turn_continues_same_process_in_place():
+    integration = get_harness_integration(HARNESS_ID_PI)
+    live_process = _FakeProcess()
+    launched = {"count": 0}
 
     def fake_launch_harness_subprocess(argv):
-        launched["argv"] = argv
+        launched["count"] += 1
         return _FakeProcess()
 
     followup_process = integration.deliver_followup_turn(
-        current_process=exited_process,
+        current_process=live_process,
         message_text="<tool result here>",
         session_id="sess-abc",
         run_request=_pi_run_request(),
         launch_harness_subprocess=fake_launch_harness_subprocess,
     )
 
-    # The exited per-turn process is awaited, and a NEW resume process is launched.
-    assert exited_process.waited is True
-    assert followup_process is not exited_process
-    argv = launched["argv"]
-    assert argv[argv.index("--session") + 1] == "sess-abc"
-    # The tool result is delivered on the new process's stdin, then closed.
-    assert followup_process.stdin.written == "<tool result here>"
-    assert followup_process.stdin.closed is True
+    # RPC: SAME process reused (no fresh resume spawn), stdin left OPEN.
+    assert followup_process is live_process
+    assert launched["count"] == 0
+    assert live_process.waited is False
+    assert live_process.stdin.closed is False
+    commands = _command_lines(live_process.stdin)
+    assert commands[-1]["type"] == "prompt"
+    assert commands[-1]["message"] == "<tool result here>"
+
+
+def test_request_abort_sends_rpc_abort_command():
+    integration = get_harness_integration(HARNESS_ID_PI)
+    process = _FakeProcess()
+    integration.request_abort(process=process, write_stream_json_message=lambda msg: None)
+    commands = _command_lines(process.stdin)
+    assert commands == [{"type": "abort"}]
 
