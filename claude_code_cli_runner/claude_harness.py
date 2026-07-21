@@ -204,6 +204,14 @@ class ClaudeHarnessIntegration:
     def create_output_event_normalizer(self) -> IdentityOutputEventNormalizer:
         return IdentityOutputEventNormalizer()
 
+    def deliver_injected_command(
+        self, *, process, command_text, write_stream_json_message
+    ) -> None:
+        """Translate a GENERIC operator "send command" into claude's stream-json form:
+        an injected user message on the running process's open stdin. The core hands
+        down the raw command_text; the claude-specific message shape lives HERE."""
+        write_stream_json_message(build_injected_user_message(command_text))
+
     def deliver_followup_turn(
         self,
         *,

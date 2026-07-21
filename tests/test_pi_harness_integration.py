@@ -239,3 +239,17 @@ def test_request_abort_sends_rpc_abort_command():
     commands = _command_lines(process.stdin)
     assert commands == [{"type": "abort"}]
 
+
+def test_deliver_injected_command_sends_rpc_steer_command():
+    # A generic operator "send command" is translated by the pi adapter into an RPC
+    # steer command (the core stays harness-agnostic and only passes command_text).
+    integration = get_harness_integration(HARNESS_ID_PI)
+    process = _FakeProcess()
+    integration.deliver_injected_command(
+        process=process,
+        command_text="focus on the login bug",
+        write_stream_json_message=lambda msg: None,
+    )
+    commands = _command_lines(process.stdin)
+    assert commands == [{"type": "steer", "message": "focus on the login bug"}]
+

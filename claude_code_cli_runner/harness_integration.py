@@ -27,6 +27,11 @@ present, so harnesses without it are unaffected):
     ``{"type":"abort"}``). The core calls it on a control-channel end BEFORE it
     terminates a one-shot task's process, so a harness that supports it frees the
     backend cleanly instead of relying on the OS-kill.
+  * ``deliver_injected_command(*, process, command_text, write_stream_json_message)`` —
+    translate a GENERIC operator "send command" (inject a message into the running
+    agent) into this harness's wire form (claude/opencode: a stream-json injected user
+    message; pi: an RPC ``steer``). The core hands down the raw ``command_text`` on a
+    ``send_command`` control intent and knows NOTHING of the harness's message shape.
 
 The runner's internal chunk shapes every normalizer must emit:
   1. ``{"type": "assistant", "message": {"content": [{"type": "text", ...}]}}``

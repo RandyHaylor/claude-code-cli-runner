@@ -304,6 +304,18 @@ class PiHarnessIntegration:
         )
         return current_process
 
+    def deliver_injected_command(
+        self, *, process, command_text, write_stream_json_message
+    ) -> None:
+        """Translate a GENERIC operator "send command" (inject a message into the
+        running agent) into pi's RPC form: a ``steer`` command, which pi queues and
+        delivers after the current turn's tool calls, before the next LLM call. The
+        core stays harness-agnostic — it hands down the raw command_text; only this
+        adapter knows pi's wire shape."""
+        write_pi_rpc_command_line(
+            process, {"type": "steer", "message": command_text}
+        )
+
     def request_abort(self, *, process, write_stream_json_message) -> None:
         """Send the RPC ``{"type":"abort"}`` command to gracefully cancel the current
         operation (verified live 2026-07-20: llama.cpp stops generating ~0.03s later)

@@ -25,7 +25,6 @@ import uuid
 
 from .content import (
     build_initialize_control_request,
-    build_injected_user_message,
     build_permission_control_response,
     extract_text_only,
     list_produced_artifacts,
@@ -755,9 +754,23 @@ def _stream_one_run(
                 paused = False
                 _reflect(status_path, RUN_STATE_RUNNING)
             elif kind == CONTROL_SEND_COMMAND:
-                write_stream_json_message(
-                    build_injected_user_message(intent.get("command_text", ""))
+                # Hand the GENERIC operator command DOWN to the harness integration,
+                # which translates it to that harness's wire form (claude/opencode: a
+                # stream-json injected user message; pi: an RPC steer). The core stays
+                # harness-agnostic — no harness-specific message shape here (paradigm:
+                # zero `if harness == ...`). No-op for a harness lacking the hook.
+                inject_hook = getattr(
+                    harness_integration, "deliver_injected_command", None
                 )
+                if callable(inject_hook):
+                    try:
+                        inject_hook(
+                            process=active_harness_process_holder["process"],
+                            command_text=intent.get("command_text", ""),
+                            write_stream_json_message=write_stream_json_message,
+                        )
+                    except Exception:
+                        pass
             elif kind == CONTROL_PERMISSION_DECISION:
                 # The operator's allow/deny for a pending tool-permission request;
                 # the awaiting loop below picks it up and writes the control_response.

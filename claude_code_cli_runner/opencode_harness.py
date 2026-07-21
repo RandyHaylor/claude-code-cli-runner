@@ -109,6 +109,15 @@ class OpencodeHarnessIntegration:
     def create_output_event_normalizer(self) -> _OpencodeOutputEventNormalizer:
         return _OpencodeOutputEventNormalizer()
 
+    def deliver_injected_command(
+        self, *, process, command_text, write_stream_json_message
+    ) -> None:
+        """Translate a GENERIC operator "send command" into opencode's stream-json
+        form. Best-effort: opencode closes stdin to start work, so the injection is
+        typically dropped on the closed pipe (opencode has no mid-run injection) —
+        but the translation still lives HERE, not in the core."""
+        write_stream_json_message(build_injected_user_message(command_text))
+
     def deliver_followup_turn(
         self,
         *,
