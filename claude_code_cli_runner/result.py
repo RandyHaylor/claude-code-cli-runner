@@ -38,6 +38,11 @@ class RunResult:
 
     assistant_text: str = ""
     final_result_event: Optional[dict] = None
+    # The session id the harness reported for this run, captured from the FIRST
+    # stream chunk that carried one — available even when the run never reached
+    # a final result event (aborted / operator-ended runs). Empty when the
+    # harness never reported a session id.
+    harness_session_id: str = ""
     produced_artifacts: List[str] = field(default_factory=list)
     exit_code: Optional[int] = None
     operator_ended: bool = False
@@ -51,6 +56,7 @@ class RunResult:
         return {
             "assistant_text": self.assistant_text,
             "final_result_event": self.final_result_event,
+            "harness_session_id": self.harness_session_id,
             "produced_artifacts": self.produced_artifacts,
             "exit_code": self.exit_code,
             "operator_ended": self.operator_ended,

@@ -120,7 +120,12 @@ def test_normalizer_skips_rpc_command_response_objects():
 
 def test_normalizer_maps_pi_events_to_internal_chunks():
     normalizer = PiOutputEventNormalizer()
-    assert normalizer.normalize({"type": "session", "id": "sess-9"}) == []
+    # The session announcement is emitted in the UNIFORM chunk shape (id under
+    # "session_id") so the core captures it even on runs aborted before
+    # agent_end — same contract as claude's system-init event.
+    assert normalizer.normalize({"type": "session", "id": "sess-9"}) == [
+        {"type": "session", "session_id": "sess-9"}
+    ]
     assert normalizer.normalize({"type": "agent_start"}) == [{"type": "agent_start"}]
 
     turn_chunks = normalizer.normalize(

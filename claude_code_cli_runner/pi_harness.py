@@ -141,6 +141,12 @@ class PiOutputEventNormalizer:
             session_id = raw_chunk.get("id")
             if isinstance(session_id, str) and session_id:
                 self._minted_session_id = session_id
+                # Emit the session announcement in the UNIFORM chunk shape
+                # (session id under "session_id", like claude's system-init
+                # event) so the core captures it the same way for every
+                # harness — including runs that never reach agent_end
+                # (aborted / operator-ended runs).
+                return [{"type": "session", "session_id": session_id}]
             return []
 
         if event_type == "turn_end":

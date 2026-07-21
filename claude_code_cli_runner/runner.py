@@ -444,8 +444,15 @@ def _stream_one_run(
     # Snapshot workspace files BEFORE the run so produced artifacts can be diffed.
     baseline_files = snapshot_workspace_files(workspace_directory)
 
-    # Start clean so a tailer's offsets are meaningful.
-    open(log_path, "w", encoding="utf-8").close()
+    # A fresh run starts a clean live log (so a tailer's offsets are
+    # meaningful); a run that RESUMES an existing session APPENDS — the resumed
+    # session's history is environment, not something to rebuild.
+    if not run_request.resume_session:
+        open(log_path, "w", encoding="utf-8").close()
+    # The control channel is TRANSPORT for exactly ONE run: a command written
+    # for a previous run (e.g. a stale end_and_return from a manual stop) must
+    # never be consumed by this run, so the channel starts empty.
+    open(control_path, "w", encoding="utf-8").close()
     if startup_notes:
         with open(log_path, "a", encoding="utf-8") as note_handle:
             for note in startup_notes:
@@ -527,6 +534,12 @@ def _stream_one_run(
     pending_permission_decision = None
     result_seen = False
     final_result_event = None
+    # The session id the harness reports (uniform contract: any harness's
+    # normalized chunk carries it under "session_id" — claude's system-init /
+    # result events, pi's session event). Captured from the FIRST chunk that
+    # carries one, so it survives runs that never reach a final result event
+    # (aborted / operator-ended runs).
+    harness_reported_session_id = ""
     collected_text_parts: list = []
     result_text_fallback: list = []
     deadline = (
@@ -710,7 +723,7 @@ def _stream_one_run(
     log_handle = open(log_path, "a", encoding="utf-8")
 
     def record_chunk_and_update_run_bookkeeping(chunk) -> None:
-        nonlocal result_seen
+        nonlocal result_seen, harness_reported_session_id
         record = {"received_at": time.time(), "chunk": chunk}
         # STANDARD activity facet (raw-780/781): renderers read ONLY this,
         # harness-agnostic; the raw chunk stays alongside for troubleshooting.
@@ -719,6 +732,10 @@ def _stream_one_run(
             record["activity"] = activity
         render_text_from_chunk(chunk)
         accumulate_token_usage_from_chunk(chunk)
+        if not harness_reported_session_id and isinstance(chunk, dict):
+            chunk_session_id = chunk.get("session_id")
+            if isinstance(chunk_session_id, str) and chunk_session_id:
+                harness_reported_session_id = chunk_session_id
         if isinstance(chunk, dict) and chunk.get("type") == "result":
             result_seen = True
         log_handle.write(json.dumps(record) + "\n")
@@ -1166,6 +1183,7 @@ def _stream_one_run(
     return RunResult(
         assistant_text=assistant_text,
         final_result_event=final_result_event,
+        harness_session_id=harness_reported_session_id,
         produced_artifacts=produced,
         exit_code=exit_code,
         operator_ended=operator_ended,

@@ -29,3 +29,16 @@ def test_text_run_captures_assistant_text_and_result(tmp_path):
         log_text = handle.read()
     assert "injected_echo" in log_text
     assert "hello stub" in log_text
+
+
+def test_run_result_carries_harness_session_id_from_stream(tmp_path):
+    # The session id is captured from the FIRST chunk that carries one (the
+    # stub's system/init event) — the uniform contract for every harness, so
+    # it is available even on runs that never reach a final result event.
+    request = RunRequest(
+        input_content=[TextBlock(text="hello stub")],
+        workspace_directory=str(tmp_path),
+    )
+    result = run_claude_code_task(request, build_command=stub_build_command)
+    assert result.harness_session_id == "stub-session"
+    assert result.to_dict()["harness_session_id"] == "stub-session"
