@@ -135,6 +135,16 @@ class PiOutputEventNormalizer:
         # — drop them so they never reach the internal chunk stream or the live log's
         # event mapping. (json mode never emitted these.)
         if event_type == "response":
+            # get_state's response is the ONLY place RPC mode reports the
+            # session id (docs/rpc.md — there is no spontaneous session event).
+            # Surface it as the uniform session chunk (id under "session_id")
+            # so the core captures it like any other harness's announcement.
+            if raw_chunk.get("command") == "get_state":
+                state_data = raw_chunk.get("data") or {}
+                state_session_id = state_data.get("sessionId")
+                if isinstance(state_session_id, str) and state_session_id:
+                    self._minted_session_id = state_session_id
+                    return [{"type": "session", "session_id": state_session_id}]
             return []
 
         if event_type == "session":
@@ -283,6 +293,14 @@ class PiHarnessIntegration:
         )
         write_pi_rpc_command_line(
             process, {"id": _fresh_rpc_command_id(), "type": "prompt", "message": prompt_text}
+        )
+        # RPC mode never announces the session id spontaneously (verified from
+        # docs/rpc.md): it is only available via get_state's response
+        # (data.sessionId). Ask for it right after the prompt so the normalizer
+        # can report the minted/resumed session id early — even for runs later
+        # aborted mid-turn (a paused run must stay resumable).
+        write_pi_rpc_command_line(
+            process, {"id": _fresh_rpc_command_id(), "type": "get_state"}
         )
         return PromptDeliveryOutcome(process_stdin_remains_open=True)
 

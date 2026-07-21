@@ -118,6 +118,24 @@ def test_normalizer_skips_rpc_command_response_objects():
     ) == []
 
 
+def test_normalizer_surfaces_session_id_from_get_state_response():
+    # RPC mode's ONLY session-id announcement is get_state's response; the
+    # normalizer surfaces it as the uniform session chunk so the core captures
+    # it — including for runs aborted before agent_end.
+    normalizer = PiOutputEventNormalizer()
+    chunks = normalizer.normalize(
+        {
+            "type": "response",
+            "command": "get_state",
+            "success": True,
+            "data": {"sessionId": "sess-from-get-state", "sessionFile": "/x.jsonl"},
+        }
+    )
+    assert chunks == [{"type": "session", "session_id": "sess-from-get-state"}]
+    result_chunks = normalizer.normalize({"type": "agent_end", "messages": []})
+    assert result_chunks[0]["session_id"] == "sess-from-get-state"
+
+
 def test_normalizer_maps_pi_events_to_internal_chunks():
     normalizer = PiOutputEventNormalizer()
     # The session announcement is emitted in the UNIFORM chunk shape (id under
@@ -204,10 +222,14 @@ def test_deliver_prompt_sends_rpc_prompt_command_and_leaves_stdin_open():
     assert outcome.process_stdin_remains_open is True
     assert process.stdin.closed is False
     commands = _command_lines(process.stdin)
-    assert len(commands) == 1
+    # The prompt command, then a get_state command — RPC mode reports the
+    # session id ONLY in get_state's response, so the runner asks up front.
+    assert len(commands) == 2
     assert commands[0]["type"] == "prompt"
     assert commands[0]["message"] == "do the thing"
     assert commands[0].get("id")  # correlation id present
+    assert commands[1]["type"] == "get_state"
+    assert commands[1].get("id")
 
 
 def test_pi_followup_turn_continues_same_process_in_place():
