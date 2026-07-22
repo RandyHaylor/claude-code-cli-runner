@@ -208,6 +208,54 @@ def _command_lines(fake_stdin):
     return [json.loads(line) for line in fake_stdin.written.splitlines() if line.strip()]
 
 
+def test_normalizer_reports_aborted_partial_turn_tokens_as_delta_from_baseline():
+    # Paused (aborted) runs never reach turn_end — the abort-time
+    # get_session_stats read is their ONLY usage report. It must report the
+    # DELTA from the baseline (a resumed session starts non-zero), advanced by
+    # each completed turn's own usage so nothing is double-counted.
+    normalizer = PiOutputEventNormalizer()
+    # Baseline read at prompt time: resumed session already holds 1000/200.
+    assert normalizer.normalize(
+        {"type": "response", "command": "get_session_stats", "success": True,
+         "data": {"tokens": {"input": 1000, "output": 200, "cacheRead": 0, "cacheWrite": 0}}}
+    ) == []
+    assert normalizer.final_usage_after_abort_reported is False
+    # A COMPLETED turn reports its own usage (advances the baseline too).
+    normalizer.normalize(
+        {"type": "turn_end", "message": {"role": "assistant",
+         "content": [{"type": "text", "text": "turn one"}],
+         "usage": {"input": 100, "output": 50, "cacheRead": 0, "cacheWrite": 0}}}
+    )
+    # Abort mid-turn-two, then the final stats read arrives.
+    assert normalizer.normalize(
+        {"type": "response", "command": "abort", "success": True}
+    ) == []
+    post_abort_chunks = normalizer.normalize(
+        {"type": "response", "command": "get_session_stats", "success": True,
+         "data": {"tokens": {"input": 1160, "output": 280, "cacheRead": 0, "cacheWrite": 0}}}
+    )
+    # Only the aborted partial turn's tokens: 1160-1100=60 in, 280-250=30 out.
+    assert post_abort_chunks == [{
+        "type": "stream_event",
+        "event": {"type": "message_delta", "usage": {
+            "input_tokens": 60, "output_tokens": 30,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }},
+    }]
+    assert normalizer.final_usage_after_abort_reported is True
+
+
+def test_normalizer_flips_post_abort_flag_even_without_stats_data():
+    # A malformed/absent stats payload must still end the core's bounded
+    # post-abort read (the flag flips regardless).
+    normalizer = PiOutputEventNormalizer()
+    normalizer.normalize({"type": "response", "command": "abort", "success": True})
+    assert normalizer.normalize(
+        {"type": "response", "command": "get_session_stats", "success": False}
+    ) == []
+    assert normalizer.final_usage_after_abort_reported is True
+
+
 def test_deliver_prompt_sends_rpc_prompt_command_and_leaves_stdin_open():
     integration = get_harness_integration(HARNESS_ID_PI)
     process = _FakeProcess()
@@ -222,14 +270,15 @@ def test_deliver_prompt_sends_rpc_prompt_command_and_leaves_stdin_open():
     assert outcome.process_stdin_remains_open is True
     assert process.stdin.closed is False
     commands = _command_lines(process.stdin)
-    # The prompt command, then a get_state command — RPC mode reports the
-    # session id ONLY in get_state's response, so the runner asks up front.
-    assert len(commands) == 2
+    # The prompt command, then get_state (session id is ONLY in its response),
+    # then get_session_stats (the token baseline for abort-time usage deltas).
+    assert len(commands) == 3
     assert commands[0]["type"] == "prompt"
     assert commands[0]["message"] == "do the thing"
     assert commands[0].get("id")  # correlation id present
     assert commands[1]["type"] == "get_state"
     assert commands[1].get("id")
+    assert commands[2]["type"] == "get_session_stats"
 
 
 def test_pi_followup_turn_continues_same_process_in_place():
@@ -264,7 +313,8 @@ def test_request_abort_sends_rpc_abort_command():
     process = _FakeProcess()
     integration.request_abort(process=process, write_stream_json_message=lambda msg: None)
     commands = _command_lines(process.stdin)
-    assert commands == [{"type": "abort"}]
+    # abort, then the final token-stats read for the aborted partial turn.
+    assert commands == [{"type": "abort"}, {"type": "get_session_stats"}]
 
 
 def test_deliver_injected_command_sends_rpc_steer_command():

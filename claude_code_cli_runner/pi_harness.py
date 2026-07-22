@@ -104,6 +104,25 @@ class PiOutputEventNormalizer:
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
         }
+        # Session-cumulative token BASELINE (pi's raw key space: input/output/
+        # cacheRead/cacheWrite), so an abort-time get_session_stats response can
+        # be reported as a DELTA — only the tokens this run's un-finished turn
+        # actually spent, never the whole session again (a resumed session's
+        # stats include earlier runs, and completed turns already reported
+        # their usage on turn_end). None until the first stats response.
+        self._session_cumulative_token_baseline = None
+        self._abort_response_seen = False
+        # Generic post-abort contract with the core: declaring this attribute
+        # (False) asks the core for a bounded read of remaining output after an
+        # abort, until it flips True (set when the post-abort stats arrive).
+        self.final_usage_after_abort_reported = False
+
+    @staticmethod
+    def _add_pi_usage_onto_baseline(baseline: dict, pi_usage: dict) -> None:
+        for pi_key in ("input", "output", "cacheRead", "cacheWrite"):
+            value = (pi_usage or {}).get(pi_key)
+            if isinstance(value, (int, float)):
+                baseline[pi_key] = baseline.get(pi_key, 0) + int(value)
 
     @staticmethod
     def _extract_assistant_text(message) -> str:
@@ -145,6 +164,51 @@ class PiOutputEventNormalizer:
                 if isinstance(state_session_id, str) and state_session_id:
                     self._minted_session_id = state_session_id
                     return [{"type": "session", "session_id": state_session_id}]
+            if raw_chunk.get("command") == "abort":
+                # The NEXT get_session_stats response is the post-abort final
+                # usage read (requested by request_abort right after the abort).
+                self._abort_response_seen = True
+                return []
+            if raw_chunk.get("command") == "get_session_stats":
+                stats_tokens = (raw_chunk.get("data") or {}).get("tokens")
+                if not isinstance(stats_tokens, dict):
+                    if self._abort_response_seen:
+                        self.final_usage_after_abort_reported = True
+                    return []
+                if self._session_cumulative_token_baseline is None:
+                    # First stats response of this run = the baseline (a fresh
+                    # session reports 0s; a RESUMED session reports the tokens
+                    # earlier runs already accounted for — never re-report them).
+                    self._session_cumulative_token_baseline = {
+                        pi_key: int(stats_tokens.get(pi_key) or 0)
+                        for pi_key in ("input", "output", "cacheRead", "cacheWrite")
+                    }
+                    if self._abort_response_seen:
+                        self.final_usage_after_abort_reported = True
+                    return []
+                unreported_usage_delta = {
+                    pi_key: max(
+                        0,
+                        int(stats_tokens.get(pi_key) or 0)
+                        - self._session_cumulative_token_baseline.get(pi_key, 0),
+                    )
+                    for pi_key in ("input", "output", "cacheRead", "cacheWrite")
+                }
+                self._session_cumulative_token_baseline = {
+                    pi_key: int(stats_tokens.get(pi_key) or 0)
+                    for pi_key in ("input", "output", "cacheRead", "cacheWrite")
+                }
+                if self._abort_response_seen:
+                    self.final_usage_after_abort_reported = True
+                if any(unreported_usage_delta.values()):
+                    return [{
+                        "type": "stream_event",
+                        "event": {
+                            "type": "message_delta",
+                            "usage": self._map_usage(unreported_usage_delta),
+                        },
+                    }]
+                return []
             return []
 
         if event_type == "session":
@@ -165,6 +229,13 @@ class PiOutputEventNormalizer:
             if turn_text:
                 self._latest_final_text = turn_text
             self._latest_usage = self._map_usage(message.get("usage"))
+            # A COMPLETED turn reports its own usage (the message_delta below);
+            # advance the session baseline by the same amount so an abort-time
+            # stats read never re-reports what this turn already reported.
+            if self._session_cumulative_token_baseline is not None:
+                self._add_pi_usage_onto_baseline(
+                    self._session_cumulative_token_baseline, message.get("usage")
+                )
             emitted: List[dict] = []
             if turn_text:
                 emitted.append(
@@ -302,6 +373,12 @@ class PiHarnessIntegration:
         write_pi_rpc_command_line(
             process, {"id": _fresh_rpc_command_id(), "type": "get_state"}
         )
+        # Baseline token read: the first get_session_stats response anchors the
+        # session-cumulative baseline (a RESUMED session starts non-zero), so a
+        # later abort-time stats read reports only THIS run's un-reported tokens.
+        write_pi_rpc_command_line(
+            process, {"id": _fresh_rpc_command_id(), "type": "get_session_stats"}
+        )
         return PromptDeliveryOutcome(process_stdin_remains_open=True)
 
     def create_output_event_normalizer(self) -> PiOutputEventNormalizer:
@@ -344,8 +421,16 @@ class PiHarnessIntegration:
         """Send the RPC ``{"type":"abort"}`` command to gracefully cancel the current
         operation (verified live 2026-07-20: llama.cpp stops generating ~0.03s later)
         WITHOUT killing the process/session — the runner's control-channel end path
-        calls this before it terminates the one-shot task's process. Best-effort."""
+        calls this before it terminates the one-shot task's process. Best-effort.
+
+        Also asks for ``get_session_stats`` right after: the aborted partial
+        turn never reaches ``turn_end`` (the only usage-bearing event), so this
+        final stats read is the ONLY way the paused run's spent tokens get
+        reported. The normalizer emits the un-reported delta and flips
+        ``final_usage_after_abort_reported`` so the core's bounded post-abort
+        read knows when to stop."""
         write_pi_rpc_command_line(process, {"type": "abort"})
+        write_pi_rpc_command_line(process, {"type": "get_session_stats"})
 
 
 register_harness_integration(PiHarnessIntegration())

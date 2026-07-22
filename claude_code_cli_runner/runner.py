@@ -807,6 +807,36 @@ def _stream_one_run(
                         )
                     except Exception:
                         pass
+                    # BOUNDED POST-ABORT READ (generic contract): a normalizer
+                    # that declares ``final_usage_after_abort_reported = False``
+                    # has final output still coming after the abort (e.g. the
+                    # aborted run's token stats — the only usage report a
+                    # mid-turn abort ever gets). Keep reading its output until
+                    # it flips the flag, EOF, or the deadline; each line goes
+                    # through the normal chunk pipeline so usage accumulates.
+                    if (
+                        getattr(
+                            output_event_normalizer,
+                            "final_usage_after_abort_reported",
+                            None,
+                        )
+                        is False
+                    ):
+                        post_abort_read_deadline = time.monotonic() + 5.0
+                        while (
+                            output_event_normalizer.final_usage_after_abort_reported
+                            is False
+                            and time.monotonic() < post_abort_read_deadline
+                        ):
+                            try:
+                                post_abort_raw_line = next(
+                                    current_turn_line_iterator
+                                )
+                            except (StopIteration, ValueError, OSError):
+                                break
+                            post_abort_raw_line = post_abort_raw_line.rstrip("\n")
+                            if post_abort_raw_line:
+                                append_chunk_to_live_log(post_abort_raw_line)
                 operator_ended = True
                 _reflect(status_path, RUN_STATE_OPERATOR_ENDED)
                 return True
