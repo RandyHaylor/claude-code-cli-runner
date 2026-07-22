@@ -235,13 +235,17 @@ def test_normalizer_reports_aborted_partial_turn_tokens_as_delta_from_baseline()
          "data": {"tokens": {"input": 1160, "output": 280, "cacheRead": 0, "cacheWrite": 0}}}
     )
     # Only the aborted partial turn's tokens: 1160-1100=60 in, 280-250=30 out.
-    assert post_abort_chunks == [{
+    # An informational session_stats chunk always precedes the usage delta so
+    # the live log records the stats read even when the delta is zero.
+    assert post_abort_chunks[0]["type"] == "session_stats"
+    assert post_abort_chunks[0]["unreported_usage_delta"]["input_tokens"] == 60
+    assert post_abort_chunks[1] == {
         "type": "stream_event",
         "event": {"type": "message_delta", "usage": {
             "input_tokens": 60, "output_tokens": 30,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
         }},
-    }]
+    }
     assert normalizer.final_usage_after_abort_reported is True
 
 

@@ -200,15 +200,23 @@ class PiOutputEventNormalizer:
                 }
                 if self._abort_response_seen:
                     self.final_usage_after_abort_reported = True
+                # Always surface the stats read in the live log (an
+                # informational chunk), so an all-zero delta is distinguishable
+                # from a stats response that never arrived.
+                emitted_chunks: List[dict] = [{
+                    "type": "session_stats",
+                    "session_cumulative_tokens": dict(stats_tokens),
+                    "unreported_usage_delta": self._map_usage(unreported_usage_delta),
+                }]
                 if any(unreported_usage_delta.values()):
-                    return [{
+                    emitted_chunks.append({
                         "type": "stream_event",
                         "event": {
                             "type": "message_delta",
                             "usage": self._map_usage(unreported_usage_delta),
                         },
-                    }]
-                return []
+                    })
+                return emitted_chunks
             return []
 
         if event_type == "session":
