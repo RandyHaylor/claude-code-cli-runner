@@ -329,7 +329,12 @@ def run_streaming_http_server(
         server.server_close()
 
 
-def stream_run(server_url: str, run_request_json: dict, access_token: "str | None" = None):
+def stream_run(
+    server_url: str,
+    run_request_json: dict,
+    access_token: "str | None" = None,
+    read_timeout_seconds: float = 3900.0,
+):
     """STREAMING client: POST a run_request and YIELD each streamed line as it
     arrives (incrementally, NOT buffered until completion), so a caller can tee
     the live log in real time.
@@ -352,7 +357,12 @@ def stream_run(server_url: str, run_request_json: dict, access_token: "str | Non
     if access_token:
         request.add_header("X-Access-Token", access_token)
     run_result = None
-    with urllib.request.urlopen(request) as response:
+    # FAIL-SAFE read timeout (raw-1694): the socket timeout bounds connect AND
+    # every read, so a wedged serve can never hang the caller forever. Sized
+    # ABOVE the runner's own idle-kill machinery (~3600s) so a legitimately
+    # quiet stream (long tool execution) is never falsely cut; on timeout the
+    # caller's transport-error path takes over (attempt refunded, retried).
+    with urllib.request.urlopen(request, timeout=read_timeout_seconds) as response:
         for raw in response:
             text = raw.decode("utf-8").rstrip("\n")
             if not text:
