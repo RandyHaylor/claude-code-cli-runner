@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import select
 import signal
 import subprocess
 import threading
@@ -822,12 +823,29 @@ def _stream_one_run(
                         )
                         is False
                     ):
+                        # The deadline must bound the READ ITSELF, not just the
+                        # gaps between lines: a harness that stays alive but
+                        # goes silent after the abort (observed live 2026-07-23
+                        # — pi never acked) would otherwise block next()
+                        # forever and hang the whole run thread. select() on
+                        # the pipe gates every read.
                         post_abort_read_deadline = time.monotonic() + 5.0
                         while (
                             output_event_normalizer.final_usage_after_abort_reported
                             is False
                             and time.monotonic() < post_abort_read_deadline
                         ):
+                            post_abort_stdout_stream = (
+                                active_harness_process_holder["process"].stdout
+                            )
+                            try:
+                                readable_streams, _, _ = select.select(
+                                    [post_abort_stdout_stream], [], [], 0.25
+                                )
+                            except (ValueError, OSError):
+                                break
+                            if not readable_streams:
+                                continue  # re-check flag + deadline
                             try:
                                 post_abort_raw_line = next(
                                     current_turn_line_iterator
