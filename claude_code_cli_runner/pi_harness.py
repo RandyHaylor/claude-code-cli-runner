@@ -58,6 +58,60 @@ PI_EXTENSION_PATHS_ENVIRONMENT_VARIABLE = "PI_EXTENSION_PATHS"
 DEFAULT_PI_PROVIDER = "ollama"
 
 
+# --- repeated-identical-tool-call loop breaker (raw-1785) -------------------
+# A heavily-quantized model (observed live: gemma4-31b q3, a 3-bit quant) can
+# hallucinate the runner-mediated unharness-tool "call" — which must be emitted as a
+# fenced text block and then STOPPED on — into a shell command, and repeat the SAME
+# failing call hundreds of times without making progress (observed: 441 identical
+# `bash: echo '{"tool":"read_my_task_details"}'` calls in one session). Pi executes the
+# agent's tools ITSELF (the runner only observes tool_execution events), so we cannot
+# return a tool-result error; instead, once the SAME call repeats past a threshold, we
+# STEER a corrective message into the running agent (pi delivers it before the next LLM
+# call). A different call resets the streak.
+MAX_IDENTICAL_CONSECUTIVE_TOOL_CALLS = 5
+REPEATED_TOOL_CALL_CORRECTIVE_MESSAGE = (
+    "You may not repeat an identical call more than %d times — check your syntax and "
+    "approach for errors." % MAX_IDENTICAL_CONSECUTIVE_TOOL_CALLS
+)
+
+
+def _tool_call_signature(tool_name, arguments) -> str:
+    """A stable identity for one tool call (name + normalized arguments), so two
+    byte-identical calls compare equal regardless of dict key order."""
+    try:
+        arguments_representation = json.dumps(arguments, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        arguments_representation = repr(arguments)
+    return (tool_name or "") + "\x00" + arguments_representation
+
+
+class RepeatedIdenticalToolCallLoopBreaker:
+    """Per-run detector: counts CONSECUTIVE identical tool calls and, once the same
+    call has been made more than ``threshold`` times in a row, returns a corrective
+    message for the core to STEER into the agent (re-emitted every ``threshold``
+    further repeats so a single ignored steer does not leave it looping forever). Any
+    DIFFERENT call resets the streak. Stateful and single-run scoped."""
+
+    def __init__(self, threshold: int = MAX_IDENTICAL_CONSECUTIVE_TOOL_CALLS) -> None:
+        self._threshold = threshold
+        self._last_signature = None
+        self._consecutive_count = 0
+
+    def corrective_message_for_observed_tool_call(self, tool_name, arguments):
+        signature = _tool_call_signature(tool_name, arguments)
+        if signature == self._last_signature:
+            self._consecutive_count += 1
+        else:
+            self._last_signature = signature
+            self._consecutive_count = 1
+        if (
+            self._consecutive_count > self._threshold
+            and self._consecutive_count % self._threshold == 1
+        ):
+            return REPEATED_TOOL_CALL_CORRECTIVE_MESSAGE
+        return None
+
+
 def _fresh_rpc_command_id() -> str:
     """A short unique id echoed back on the command's response for correlation."""
     return uuid.uuid4().hex
@@ -412,6 +466,14 @@ class PiHarnessIntegration:
             {"id": _fresh_rpc_command_id(), "type": "prompt", "message": message_text},
         )
         return current_process
+
+    def create_tool_call_loop_breaker(self):
+        """OPTIONAL core hook (called via getattr, like deliver_injected_command):
+        a fresh per-run detector that STEERS the agent out of a repeated-identical-
+        tool-call loop (raw-1785). Only pi provides one — pi keeps stdin open, so the
+        core can inject the corrective mid-run; harnesses without this hook are
+        unaffected."""
+        return RepeatedIdenticalToolCallLoopBreaker()
 
     def deliver_injected_command(
         self, *, process, command_text, write_stream_json_message

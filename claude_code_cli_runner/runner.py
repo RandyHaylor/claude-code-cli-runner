@@ -543,6 +543,20 @@ def _stream_one_run(
     harness_integration = get_harness_integration(run_request.harness)
     output_event_normalizer = harness_integration.create_output_event_normalizer()
 
+    # Optional per-run guard (raw-1785): a harness that keeps stdin open (pi) can supply
+    # a loop breaker that detects a repeated-identical-tool-call loop — a quantized model
+    # hallucinating a runner-mediated tool call into a shell command and repeating it
+    # forever — so the core can STEER a corrective into the running agent. Absent hook or
+    # a harness without mid-run injection -> no breaker (unaffected).
+    tool_call_loop_breaker = None
+    _create_tool_call_loop_breaker = getattr(
+        harness_integration, "create_tool_call_loop_breaker", None
+    )
+    if callable(_create_tool_call_loop_breaker) and getattr(
+        harness_integration.capabilities, "supports_mid_run_command_injection", False
+    ):
+        tool_call_loop_breaker = _create_tool_call_loop_breaker()
+
     # Live tool-permission escalation via the CLI's can_use_tool control protocol
     # is active only when a permission posture is set (transports launches the CLI
     # with --permission-prompt-tool stdio in that case). Send the one-time
@@ -774,6 +788,40 @@ def _stream_one_run(
         log_handle.write(json.dumps(record) + "\n")
         log_handle.flush()
         os.fsync(log_handle.fileno())
+        # Repeated-identical-tool-call loop breaker (raw-1785): when the agent repeats the
+        # SAME tool call past the threshold (a quantized model looping a hallucinated
+        # call), steer a corrective into the running agent. Best-effort + logged; a steer
+        # failure must never break the run.
+        if (
+            tool_call_loop_breaker is not None
+            and isinstance(chunk, dict)
+            and chunk.get("type") == "tool_execution_start"
+        ):
+            corrective_message = (
+                tool_call_loop_breaker.corrective_message_for_observed_tool_call(
+                    chunk.get("toolName"), chunk.get("args") or {}
+                )
+            )
+            if corrective_message:
+                try:
+                    harness_integration.deliver_injected_command(
+                        process=active_harness_process_holder["process"],
+                        command_text=corrective_message,
+                        write_stream_json_message=write_stream_json_message,
+                    )
+                    loop_break_note = (
+                        "repeated-identical-tool-call loop detected; steered corrective "
+                        "to the agent (raw-1785)"
+                    )
+                    log_handle.write(json.dumps({
+                        "received_at": time.time(),
+                        "activity": {"kind": "runner_note", "text": loop_break_note},
+                        "runner_note": loop_break_note,
+                    }) + "\n")
+                    log_handle.flush()
+                    os.fsync(log_handle.fileno())
+                except Exception:
+                    pass  # a steer failure must never break the run
 
     def append_chunk_to_live_log(raw_line: str):
         try:
