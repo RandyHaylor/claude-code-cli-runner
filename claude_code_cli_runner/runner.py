@@ -422,6 +422,35 @@ def _run_priming_session(run_request: RunRequest, *, argv) -> None:
         )
 
 
+def _make_live_log_safe_chunk(chunk):
+    """Return a copy of a stream chunk that is SAFE to persist to the live log.
+
+    A streaming ``message_update`` carries the FULL cumulative assistant message —
+    or, for a tool call, the entire growing tool-call ``arguments`` — inside
+    ``assistantMessageEvent.partial`` on EVERY token delta. Logging that verbatim grows
+    the log O(n^2) in the message length: a ~37 KB file streamed as a ``write`` tool call
+    over ~11k token deltas produced a 180 MB live log (~5000x amplification), which also
+    chokes any live-log reader (the dashboard). The redundant cumulative snapshot is dropped
+    from the ON-DISK copy — the incremental ``delta`` is kept (the dashboard's token stream
+    and the connector's live token estimator read only ``delta``), and the final full
+    message is still captured verbatim in the ``message_end`` chunk. Every in-memory
+    consumer keeps the untouched original chunk; only what is written to the log is trimmed.
+    """
+    if not isinstance(chunk, dict) or chunk.get("type") != "message_update":
+        return chunk
+    assistant_message_event = chunk.get("assistantMessageEvent")
+    if not isinstance(assistant_message_event, dict) or "partial" not in assistant_message_event:
+        return chunk
+    trimmed_event = {
+        key: value for key, value in assistant_message_event.items() if key != "partial"
+    }
+    trimmed_chunk = {
+        key: value for key, value in chunk.items() if key != "assistantMessageEvent"
+    }
+    trimmed_chunk["assistantMessageEvent"] = trimmed_event
+    return trimmed_chunk
+
+
 def _stream_one_run(
     run_request: RunRequest,
     *,
@@ -726,7 +755,9 @@ def _stream_one_run(
 
     def record_chunk_and_update_run_bookkeeping(chunk) -> None:
         nonlocal result_seen, harness_reported_session_id
-        record = {"received_at": time.time(), "chunk": chunk}
+        # In-memory bookkeeping below uses the ORIGINAL chunk; only the on-disk copy is
+        # trimmed of the redundant cumulative message_update snapshot (raw: 180MB live log).
+        record = {"received_at": time.time(), "chunk": _make_live_log_safe_chunk(chunk)}
         # STANDARD activity facet (raw-780/781): renderers read ONLY this,
         # harness-agnostic; the raw chunk stays alongside for troubleshooting.
         activity = derive_harness_activity_event(chunk)
