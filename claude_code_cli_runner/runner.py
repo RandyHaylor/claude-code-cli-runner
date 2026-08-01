@@ -425,29 +425,32 @@ def _run_priming_session(run_request: RunRequest, *, argv) -> None:
 def _make_live_log_safe_chunk(chunk):
     """Return a copy of a stream chunk that is SAFE to persist to the live log.
 
-    A streaming ``message_update`` carries the FULL cumulative assistant message —
-    or, for a tool call, the entire growing tool-call ``arguments`` — inside
-    ``assistantMessageEvent.partial`` on EVERY token delta. Logging that verbatim grows
-    the log O(n^2) in the message length: a ~37 KB file streamed as a ``write`` tool call
-    over ~11k token deltas produced a 180 MB live log (~5000x amplification), which also
-    chokes any live-log reader (the dashboard). The redundant cumulative snapshot is dropped
-    from the ON-DISK copy — the incremental ``delta`` is kept (the dashboard's token stream
-    and the connector's live token estimator read only ``delta``), and the final full
-    message is still captured verbatim in the ``message_end`` chunk. Every in-memory
-    consumer keeps the untouched original chunk; only what is written to the log is trimmed.
+    A streaming ``message_update`` carries the FULL cumulative assistant message — or, for a
+    tool call, the entire growing tool-call ``arguments`` — TWICE on EVERY token delta: once
+    as a top-level ``message`` object AND once as ``assistantMessageEvent.partial``. Logging
+    that verbatim grows the log O(n^2) in the message length: a ~37 KB file streamed as a
+    ``write``/``edit`` tool call over tens of thousands of token deltas produced a 100-180 MB
+    live log, which also chokes any live-log reader (the dashboard). BOTH redundant cumulative
+    snapshots are dropped from the ON-DISK copy — the incremental ``delta`` (under
+    ``assistantMessageEvent``) is kept, since the dashboard's token stream and the connector's
+    live token estimator read only ``delta``, and the final full message is still captured
+    verbatim in the ``message_end`` chunk. Every in-memory consumer keeps the untouched
+    original chunk; only what is written to the log is trimmed.
     """
     if not isinstance(chunk, dict) or chunk.get("type") != "message_update":
         return chunk
-    assistant_message_event = chunk.get("assistantMessageEvent")
-    if not isinstance(assistant_message_event, dict) or "partial" not in assistant_message_event:
-        return chunk
-    trimmed_event = {
-        key: value for key, value in assistant_message_event.items() if key != "partial"
-    }
-    trimmed_chunk = {
-        key: value for key, value in chunk.items() if key != "assistantMessageEvent"
-    }
-    trimmed_chunk["assistantMessageEvent"] = trimmed_event
+    trimmed_chunk = {}
+    for key, value in chunk.items():
+        if key == "message":
+            continue  # cumulative full message snapshot — redundant with message_end
+        if key == "assistantMessageEvent" and isinstance(value, dict):
+            trimmed_chunk[key] = {
+                inner_key: inner_value
+                for inner_key, inner_value in value.items()
+                if inner_key != "partial"  # the other cumulative snapshot
+            }
+        else:
+            trimmed_chunk[key] = value
     return trimmed_chunk
 
 

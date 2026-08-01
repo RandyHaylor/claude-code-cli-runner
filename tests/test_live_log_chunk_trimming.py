@@ -43,6 +43,44 @@ def test_cumulative_partial_is_dropped_but_delta_is_kept():
     assert len(json.dumps(trimmed)) < 500
 
 
+def test_cumulative_top_level_message_is_dropped_but_delta_is_kept():
+    # pi ALSO carries the full cumulative message as a top-level ``message`` object on every
+    # delta (in addition to assistantMessageEvent.partial). It must be stripped too, else the
+    # log still grows O(n^2) even when partial is absent (observed: a 106 MB log).
+    big = "z" * 100_000
+    chunk = {
+        "type": "message_update",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "toolCall", "name": "edit",
+                         "arguments": {"content": big}}],
+        },
+        "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 0, "delta": "});"},
+    }
+    trimmed = _make_live_log_safe_chunk(chunk)
+    assert "message" not in trimmed  # the cumulative top-level snapshot is gone
+    assert trimmed["assistantMessageEvent"]["delta"] == "});"  # incremental delta preserved
+    assert "partial" not in trimmed["assistantMessageEvent"]
+    assert len(json.dumps(trimmed)) < 300  # tiny, despite the 100 KB cumulative content
+
+
+def test_both_cumulative_snapshots_dropped_together():
+    big = "q" * 50_000
+    chunk = {
+        "type": "message_update",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": big}]},
+        "assistantMessageEvent": {
+            "type": "text_delta", "delta": "x",
+            "partial": {"role": "assistant", "content": [{"type": "text", "text": big}]},
+        },
+    }
+    trimmed = _make_live_log_safe_chunk(chunk)
+    assert "message" not in trimmed
+    assert "partial" not in trimmed["assistantMessageEvent"]
+    assert trimmed["assistantMessageEvent"]["delta"] == "x"
+    assert len(json.dumps(trimmed)) < 200
+
+
 def test_original_chunk_is_not_mutated():
     chunk = _streaming_tool_call_update("y" * 5000)
     before = copy.deepcopy(chunk)
