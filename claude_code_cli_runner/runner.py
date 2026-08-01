@@ -59,6 +59,7 @@ from .harness_integration import get_harness_integration
 from .request import RunRequest, TextBlock
 from .runner_provided_mcp_registry import (
     DigestibleToolNameUnknown,
+    list_digestible_tool_names,
     split_assigned_tools_into_builtins_and_runner_mcps,
     translate_digestible_tool_name_to_mcp,
 )
@@ -1062,6 +1063,18 @@ def _stream_one_run(
                 detected_tool_calls = detect_unharness_tool_calls_in_turn_text(
                     just_completed_turn_text
                 )
+                # Intercept ONLY calls to a tool the active runner-provided MCP actually
+                # exposes (spec: the runner mediates ITS integrated MCP tools and nothing
+                # else). Any other fenced block — e.g. an Unharness-level JSON return shape
+                # like return_requested_value, which the conveyor parses, not the runner —
+                # is left in the turn text and ends the turn normally.
+                registered_tool_names = set(
+                    list_digestible_tool_names(active_runner_mcp_name)
+                )
+                detected_tool_calls = [
+                    call for call in detected_tool_calls
+                    if call["tool"] in registered_tool_names
+                ]
                 if not detected_tool_calls:
                     break  # a genuine final message: the stop propagates as before
                 if completed_tool_round_trips >= TOOL_ROUND_TRIP_MAXIMUM:

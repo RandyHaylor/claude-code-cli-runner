@@ -265,9 +265,13 @@ def test_tool_call_text_without_mcp_in_assigned_tools_is_not_intercepted(tmp_pat
     assert "TOOL_RESULT_RECEIVED" not in (result.assistant_text or "")
 
 
-def test_unknown_digestible_tool_is_reported_back_as_error_not_crash(tmp_path):
+def test_unregistered_tool_name_is_not_intercepted_and_ends_the_turn(tmp_path):
+    # Spec: the runner mediates ONLY the tools its integrated MCP exposes. A fenced block
+    # naming something the active MCP does NOT expose — e.g. an Unharness-level JSON return
+    # shape like return_requested_value, which the conveyor parses, not the runner — is left
+    # in the turn text: the executor is never called and the turn ends normally.
     def fake_executor(mcp_tool_name, tool_arguments, run_environment_variables):
-        raise AssertionError("unknown tool must not reach the executor")
+        raise AssertionError("an unregistered tool name must not be intercepted/executed")
 
     request = RunRequest(
         input_content=[TextBlock(text="do the unharness work")],
@@ -276,13 +280,13 @@ def test_unknown_digestible_tool_is_reported_back_as_error_not_crash(tmp_path):
         unharness_tool_call_executor=fake_executor,
     )
     os.environ["STUB_TOOL_CALL_TURN_TEXT"] = (
-        "```unharness-tool\n{\"tool\": \"no_such_tool\"}\n```"
+        "```unharness-tool\n{\"tool\": \"return_requested_value\", "
+        "\"arguments\": {\"value\": \"done\"}}\n```"
     )
     try:
         result = run_claude_code_task(request, build_command=stub_build_command)
     finally:
         os.environ.pop("STUB_TOOL_CALL_TURN_TEXT", None)
-    # The agent still got a next-turn message (an error one) and finished.
-    assert "TOOL_RESULT_RECEIVED::" in result.assistant_text
-    assert "error" in result.assistant_text
-    assert "no_such_tool" in result.assistant_text
+    # Not intercepted: no tool round-trip happened; the carrier block stays as the final text.
+    assert "TOOL_RESULT_RECEIVED" not in (result.assistant_text or "")
+    assert "return_requested_value" in (result.assistant_text or "")
