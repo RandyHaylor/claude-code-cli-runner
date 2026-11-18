@@ -245,14 +245,23 @@ def build_streaming_http_server(
             def run_it():
                 result_holder["result"] = run_claude_code_task(run_request)
 
-            worker = threading.Thread(target=run_it)
-            worker.start()
-
             # Stream the live log as it grows, then the final run_result line.
             log_path = os.path.join(
                 run_request.workspace_directory, "task_live_log.jsonl"
             )
+            # The stream carries THIS run's lines only. A fresh run truncates the
+            # log, so it streams from the start; a run that RESUMES a session
+            # appends to the log earlier runs wrote, so its stream starts where
+            # that history ends (measured before the run can write anything).
+            # Re-sending the history makes the caller mistake old output for the
+            # current turn's — its per-turn limits then cancel the turn at once.
             offset = 0
+            if run_request.resume_session and os.path.isfile(log_path):
+                offset = os.path.getsize(log_path)
+
+            worker = threading.Thread(target=run_it)
+            worker.start()
+
             while worker.is_alive() or offset is not None:
                 offset = self._flush_new_lines(log_path, offset)
                 if not worker.is_alive():
@@ -273,6 +282,10 @@ def build_streaming_http_server(
         def _flush_new_lines(self, log_path, offset):
             if not os.path.isfile(log_path):
                 return offset
+            # A log now SHORTER than the offset was started over (a resume that
+            # fell back to a fresh session truncates it): stream it from the start.
+            if os.path.getsize(log_path) < offset:
+                offset = 0
             with open(log_path, "r", encoding="utf-8") as handle:
                 handle.seek(offset)
                 data = handle.read()
