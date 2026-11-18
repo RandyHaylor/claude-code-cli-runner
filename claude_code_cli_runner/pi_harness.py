@@ -341,6 +341,24 @@ class PiHarnessIntegration:
         ignores_unsupported_permission_mode=True,
     )
 
+    def resumable_session_exists(self, run_request) -> bool:
+        """Whether the session a RESUME run names is in this run's Pi session store.
+        Pi keeps one ``<timestamp>_<session id>.jsonl`` per session in the session
+        directory; a session made by another harness, in another directory, or since
+        cleared is not there, and ``pi --session <id>`` then exits with "No session found
+        matching". The runner asks this BEFORE launching, so it can start a fresh session
+        with the caller's full prompt instead of failing the run."""
+        session_directory = os.environ.get(
+            PI_SESSION_DIRECTORY_ENVIRONMENT_VARIABLE
+        ) or os.path.join(os.fspath(run_request.workspace_directory), "pi_sessions")
+        session_id = run_request.session_id or ""
+        if not session_id or not os.path.isdir(session_directory):
+            return False
+        return any(
+            session_id in session_file_name
+            for session_file_name in os.listdir(session_directory)
+        )
+
     def build_launch_command(self, run_request) -> List[str]:
         pi_command = os.environ.get(PI_COMMAND_ENVIRONMENT_VARIABLE, "pi")
         fallback_provider = os.environ.get(

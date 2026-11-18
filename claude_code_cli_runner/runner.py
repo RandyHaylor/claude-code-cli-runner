@@ -173,6 +173,41 @@ def run_claude_code_task(
                 ],
             )
 
+    # The SAME fallback for any other harness that can say whether a session it is asked
+    # to resume exists (optional hook ``resumable_session_exists``): a session made by a
+    # different harness, in a different directory, or since cleared cannot be resumed
+    # (observed live 2026-11-18: pi asked to resume a claude session exited with "No
+    # session found matching", failing the run three times over). Start a FRESH session
+    # with the caller's full prompt instead; the new id is captured on the result path.
+    resumable_session_exists = getattr(
+        get_harness_integration(run_request.harness), "resumable_session_exists", None
+    )
+    if (
+        callable(resumable_session_exists)
+        and run_request.resume_session
+        and run_request.session_id
+        and run_request.resume_fallback_prompt
+        and not build_command_was_injected
+        and resumable_session_exists(run_request) is False
+    ):
+        fresh_session_request = dataclasses.replace(
+            run_request,
+            session_id=None,
+            resume_session=False,
+            input_content=[TextBlock(run_request.resume_fallback_prompt)],
+        )
+        return _stream_one_run(
+            fresh_session_request,
+            argv=build_command(fresh_session_request),
+            input_content=list(fresh_session_request.input_content),
+            pause_poll_seconds=pause_poll_seconds,
+            startup_notes=[
+                "resume of session %s impossible (no such session in this run's session "
+                "store); started a FRESH session with the resume fallback prompt"
+                % run_request.session_id
+            ],
+        )
+
     # BASE-SESSION FORK (raw-1211/1212): a claude task's FIRST run (a caller-minted
     # session_id, resume_session False, no reusable chunk) forks its fresh session from
     # a warm, dated base session whose universal init prompt is already cached — instead
