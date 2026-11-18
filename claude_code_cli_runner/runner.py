@@ -507,6 +507,9 @@ def _stream_one_run(
             str(name): str(value)
             for name, value in run_request.run_environment_variables.items()
         })
+    keep_runner_bookkeeping_files_out_of_any_git_repository_the_agent_makes(
+        workspace_directory, harness_environment
+    )
     def launch_harness_subprocess(subprocess_argv):
         # OWN PROCESS GROUP (raw-821): the harness and every subprocess it
         # spawns live in one killable group, so terminating a run can never
@@ -1336,6 +1339,47 @@ def _stream_one_run(
         harness_stderr=captured_harness_stderr,
         token_usage=dict(cumulative_token_usage),
     )
+
+
+# The runner's own files inside a run's working directory. The agent works in that same
+# directory, so a `git init` + `git add .` there would sweep them into the agent's
+# repository (observed live 2026-11-18: a worker's first commit carried the runner's
+# live log, control channel and run status).
+RUNNER_BOOKKEEPING_PATHS_IN_THE_WORKING_DIRECTORY = (
+    "task_live_log.jsonl",
+    "task_control_channel.jsonl",
+    "task_run_status.json",
+    "pi_sessions/",
+    ".runner_bookkeeping_git_excludes",
+)
+RUNNER_BOOKKEEPING_GIT_EXCLUDES_FILE_NAME = ".runner_bookkeeping_git_excludes"
+
+
+def keep_runner_bookkeeping_files_out_of_any_git_repository_the_agent_makes(
+    workspace_directory: str, harness_environment: dict
+) -> None:
+    """Make git, as run by the harness and anything it spawns, IGNORE the runner's own
+    files in the working directory: write an excludes file naming them and point git at
+    it through the process environment (``core.excludesFile`` via ``GIT_CONFIG_*``), so
+    no repository the agent creates there can pick them up — without touching the
+    agent's repositories or the machine's git configuration. An excludes file the
+    environment already configures this way is left alone. Best-effort: a failure here
+    must never stop a run."""
+    try:
+        if "GIT_CONFIG_COUNT" in harness_environment:
+            return  # the environment already drives git config this way; do not disturb it
+        excludes_path = os.path.join(
+            workspace_directory, RUNNER_BOOKKEEPING_GIT_EXCLUDES_FILE_NAME
+        )
+        with open(excludes_path, "w", encoding="utf-8") as excludes_file:
+            excludes_file.write(
+                "\n".join(RUNNER_BOOKKEEPING_PATHS_IN_THE_WORKING_DIRECTORY) + "\n"
+            )
+        harness_environment["GIT_CONFIG_COUNT"] = "1"
+        harness_environment["GIT_CONFIG_KEY_0"] = "core.excludesFile"
+        harness_environment["GIT_CONFIG_VALUE_0"] = excludes_path
+    except Exception:
+        pass
 
 
 def _reflect(status_path: str, run_state: str) -> None:
