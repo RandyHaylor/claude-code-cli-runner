@@ -51,6 +51,9 @@ class RunResult:
     workspace_directory: str = ""
     harness_stderr: str = ""
     token_usage: dict = field(default_factory=dict)
+    # One record per accepted "continue in a fresh session from a handoff document"
+    # request: {previous_session_id, new_session_id, handoff_document_path, started_at}.
+    fresh_sessions_started_from_handoff_documents: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -65,4 +68,7 @@ class RunResult:
             "workspace_directory": self.workspace_directory,
             "harness_stderr": self.harness_stderr,
             "token_usage": self.token_usage,
+            "fresh_sessions_started_from_handoff_documents": list(
+                self.fresh_sessions_started_from_handoff_documents
+            ),
         }

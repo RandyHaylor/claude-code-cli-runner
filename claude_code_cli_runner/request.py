@@ -261,6 +261,12 @@ class RunRequest:
     # picks up interim dependency/prompt updates). None => unknown => the idle gate is
     # skipped and only the base's max AGE governs regeneration.
     unharness_idle_seconds: Optional[float] = None
+    # Per-run context threshold, in tokens, for the fresh-session handoff
+    # (docs/SESSION-HANDOFF-INTERFACE.md): past it the harness's attention signal (claude:
+    # a PreToolUse hook in the inline --settings) refuses tool calls with the handoff
+    # procedure. The caller supplies the policy value; None => no attention signal. The
+    # runner ALWAYS accepts the agent's handoff request, whatever this is.
+    fresh_session_handoff_context_token_threshold: Optional[int] = None
 
     def __post_init__(self):
         if self.execution_location not in KNOWN_EXECUTION_LOCATIONS:

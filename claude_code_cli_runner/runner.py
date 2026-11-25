@@ -68,6 +68,14 @@ from .unharness_tool_call_detection import (
     detect_unharness_tool_calls_in_turn_text,
 )
 from .unharness_mcp_tool_executor import execute_unharness_mcp_tool_call
+from .fresh_session_from_handoff_document import (
+    compose_fresh_session_first_message_text,
+    compose_refusal_message_text,
+    detect_fresh_session_handoff_requests_in_turn_text,
+    reason_the_attention_hook_cannot_be_installed,
+    reason_the_handoff_request_is_refused,
+    resolve_handoff_document_path,
+)
 from .result import RunResult
 from . import session_registry
 from . import claude_session_store
@@ -1079,6 +1087,26 @@ def _stream_one_run(
         os.fsync(log_handle.fileno())
 
     captured_harness_stderr = ""
+    fresh_sessions_started_from_handoff_documents: list = []
+
+    def write_runner_note(note_text: str) -> None:
+        log_handle.write(json.dumps({
+            "received_at": time.time(),
+            "activity": {"kind": "runner_note", "text": note_text},
+            "runner_note": note_text,
+        }) + "\n")
+        log_handle.flush()
+        os.fsync(log_handle.fileno())
+
+    if run_request.fresh_session_handoff_context_token_threshold:
+        attention_hook_not_installed_reason = (
+            reason_the_attention_hook_cannot_be_installed(run_request)
+        )
+        if attention_hook_not_installed_reason and run_request.harness == "claude_cli":
+            write_runner_note(
+                "context-threshold attention hook NOT installed: %s"
+                % attention_hook_not_installed_reason
+            )
     # Read the run's output as a sequence of TURNS. Each line comes from the
     # CURRENT turn's process; when the runner-mediated tool loop serves a tool and
     # continues the session, the harness's deliver_followup_turn hands back the
@@ -1175,6 +1203,85 @@ def _stream_one_run(
                 break
 
             if result_seen:
+                # FRESH SESSION FROM A HANDOFF DOCUMENT (docs/SESSION-HANDOFF-INTERFACE.md):
+                # a harness-agnostic request in the turn text. Accepted => the harness
+                # integration starts a NEW session for this same run with the document's
+                # path; refused => the reason goes back into the same session.
+                handoff_requests = detect_fresh_session_handoff_requests_in_turn_text(
+                    "".join(collected_text_parts[current_turn_text_start_index:])
+                )
+                if handoff_requests:
+                    if completed_tool_round_trips >= TOOL_ROUND_TRIP_MAXIMUM:
+                        write_runner_note(
+                            "runner round-trip maximum (%d) reached; ending the run"
+                            % TOOL_ROUND_TRIP_MAXIMUM
+                        )
+                        break
+                    handoff_request = handoff_requests[0]
+                    start_fresh_session = getattr(
+                        harness_integration, "start_fresh_session_from_handoff_document", None
+                    )
+                    refusal_reason = reason_the_handoff_request_is_refused(
+                        handoff_request, workspace_directory
+                    )
+                    if refusal_reason is None and not callable(start_fresh_session):
+                        refusal_reason = (
+                            "the %s harness cannot start a fresh session from a handoff "
+                            "document" % run_request.harness
+                        )
+                    previous_session_id = (
+                        (final_result_event or {}).get("session_id")
+                        or harness_reported_session_id
+                    )
+                    if refusal_reason is None:
+                        handoff_document_path = resolve_handoff_document_path(
+                            handoff_request, workspace_directory
+                        )
+                        new_process, new_session_id = start_fresh_session(
+                            current_process=active_harness_process_holder["process"],
+                            first_message_text=compose_fresh_session_first_message_text(
+                                handoff_document_path
+                            ),
+                            run_request=run_request,
+                            launch_harness_subprocess=launch_harness_subprocess,
+                        )
+                        active_harness_process_holder["process"] = new_process
+                        # A harness that mints its id reports it on the stream: clear so
+                        # the next session chunk is captured as the run's session.
+                        harness_reported_session_id = new_session_id or ""
+                        fresh_sessions_started_from_handoff_documents.append({
+                            "previous_session_id": previous_session_id,
+                            "new_session_id": new_session_id,
+                            "handoff_document_path": handoff_document_path,
+                            "started_at": time.time(),
+                        })
+                        write_runner_note(
+                            "started a fresh session %s from handoff document %s "
+                            "(previous session %s)"
+                            % (new_session_id or "(harness-minted)",
+                               handoff_document_path, previous_session_id)
+                        )
+                    else:
+                        write_runner_note(
+                            "fresh-session handoff request refused: %s" % refusal_reason
+                        )
+                        active_harness_process_holder["process"] = (
+                            harness_integration.deliver_followup_turn(
+                                current_process=active_harness_process_holder["process"],
+                                message_text=compose_refusal_message_text(refusal_reason),
+                                session_id=previous_session_id,
+                                run_request=run_request,
+                                launch_harness_subprocess=launch_harness_subprocess,
+                            )
+                        )
+                    current_turn_line_iterator = iter(
+                        active_harness_process_holder["process"].stdout
+                    )
+                    completed_tool_round_trips += 1
+                    result_seen = False
+                    final_result_event = None
+                    current_turn_text_start_index = len(collected_text_parts)
+                    continue
                 if not tool_loop_enabled:
                     break
                 just_completed_turn_text = "".join(
@@ -1373,6 +1480,9 @@ def _stream_one_run(
         workspace_directory=workspace_directory,
         harness_stderr=captured_harness_stderr,
         token_usage=dict(cumulative_token_usage),
+        fresh_sessions_started_from_handoff_documents=list(
+            fresh_sessions_started_from_handoff_documents
+        ),
     )
 
 
@@ -1385,6 +1495,7 @@ RUNNER_BOOKKEEPING_PATHS_IN_THE_WORKING_DIRECTORY = (
     "task_control_channel.jsonl",
     "task_run_status.json",
     "pi_sessions/",
+    "session_handoff_documents/",
     ".runner_bookkeeping_git_excludes",
 )
 RUNNER_BOOKKEEPING_GIT_EXCLUDES_FILE_NAME = ".runner_bookkeeping_git_excludes"

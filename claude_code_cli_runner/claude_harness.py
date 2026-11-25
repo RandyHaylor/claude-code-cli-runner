@@ -9,10 +9,13 @@ so its output normalizer is the identity.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import uuid
 from typing import List
 
 from .content import build_injected_user_message, build_user_message
+from .fresh_session_from_handoff_document import add_attention_hook_to_claude_settings
 from .harness_integration import (
     HarnessCapabilities,
     IdentityOutputEventNormalizer,
@@ -22,7 +25,7 @@ from .harness_integration import (
 from .harness_tool_name_translation import (
     translate_generic_tool_names_to_harness_specific,
 )
-from .request import RunRequest
+from .request import RunRequest, TextBlock
 from .runner_provided_mcp_registry import (
     split_assigned_tools_into_builtins_and_runner_mcps,
 )
@@ -74,6 +77,11 @@ def build_base_claude_argv(run_request: RunRequest) -> "list[str]":
         permissions_block = dict(combined_claude_settings.get("permissions") or {})
         permissions_block["defaultMode"] = run_request.permission_mode
         combined_claude_settings["permissions"] = permissions_block
+    # Context-threshold attention hook for the fresh-session handoff (per-run threshold;
+    # docs/SESSION-HANDOFF-INTERFACE.md), merged into the same single --settings.
+    combined_claude_settings = add_attention_hook_to_claude_settings(
+        run_request, combined_claude_settings
+    )
     if combined_claude_settings:
         argv += ["--settings", json.dumps(combined_claude_settings, sort_keys=True)]
     # Caller session-start steering (raw-1255): append text to the system prompt via
@@ -233,6 +241,36 @@ class ClaudeHarnessIntegration:
             except (BrokenPipeError, ValueError, OSError):
                 pass
         return current_process
+
+    def start_fresh_session_from_handoff_document(
+        self,
+        *,
+        current_process,
+        first_message_text,
+        run_request,
+        launch_harness_subprocess,
+    ):
+        """End the current claude session and start a NEW one (caller-chosen id via
+        --session-id, never --resume) with the same argv posture — settings, attention
+        hook, model, permissions, tools — whose first input is ``first_message_text``.
+        Returns ``(new_process, new_session_id)``."""
+        from .runner import _terminate_process  # local: runner imports this module
+
+        _terminate_process(current_process)
+        new_session_id = str(uuid.uuid4())
+        fresh_session_request = dataclasses.replace(
+            run_request, session_id=new_session_id, resume_session=False
+        )
+        new_process = launch_harness_subprocess(build_base_claude_argv(fresh_session_request))
+        if new_process.stdin is not None:
+            try:
+                new_process.stdin.write(
+                    json.dumps(build_user_message([TextBlock(first_message_text)])) + "\n"
+                )
+                new_process.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+        return new_process, new_session_id
 
 
 register_harness_integration(ClaudeHarnessIntegration())
