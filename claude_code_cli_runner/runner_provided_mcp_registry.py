@@ -23,9 +23,15 @@ UNHARNESS_API_RUNNER_MCP_NAME = "unharness-api"
 # abandon — and nothing that can mint a fresh top-level request or requires the
 # user-gated approval channel.
 UNHARNESS_API_INGEST_RUNNER_MCP_NAME = "unharness-api-ingest"
+# The planning agent's role-scoped subset: ingest node-building tools plus wiki entries.
+UNHARNESS_API_PLANNING_RUNNER_MCP_NAME = "unharness-api-planning"
 
 KNOWN_RUNNER_PROVIDED_MCP_NAMES = frozenset(
-    {UNHARNESS_API_RUNNER_MCP_NAME, UNHARNESS_API_INGEST_RUNNER_MCP_NAME}
+    {
+        UNHARNESS_API_RUNNER_MCP_NAME,
+        UNHARNESS_API_INGEST_RUNNER_MCP_NAME,
+        UNHARNESS_API_PLANNING_RUNNER_MCP_NAME,
+    }
 )
 
 
