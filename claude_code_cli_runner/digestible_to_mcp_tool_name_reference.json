@@ -1,6 +1,19 @@
 {
   "_description": "Digestible -> standard-MCP tool-name translation for the runner's MCP integration layer (SoT nd-473). Agents are prompted with the DIGESTIBLE names (left); the runner translates each detected call to the standard MCP tool name (right) before forwarding via tools/call. The unharness MCP server's names are already verbose and purpose-driven, so the seed map is identity; the layer exists so a simpler agent-facing surface (or a role-scoped subset) can be presented without touching the industry-standard server. 'unharness-api-ingest' is exactly that role-scoped subset (raw-1353): the ingest-session surface EXCLUDES create_work_task_citing_ledger_entries (it mints a fresh top-level user_request that re-enters ingest -- observed looping a live session that reached for it as 'create work task') and the user-gated request_* ops (an ingest session composes its own subtree ungated; the gated channel is the assistant's). The ingest surface ALSO EXCLUDES the two whole-store reads (read_dashboard_state, list_all_container_nodes): on a real store one call returns hundreds of kilobytes (measured 2026-11-18: 650 KB, ~160k tokens), which overflows an ingest session's context in a single tool result -- observed forcing a context compaction on nearly every ingest turn, after which the session no longer remembered its tool names. An ingest session's brief already shows it its place in the tree; read_one_node / read_node_subtree serve any targeted look-up.",
   "mcp_tool_name_by_digestible_name": {
+    "unharness-api-planning": {
+      "read_one_node": "read_one_node",
+      "read_node_subtree": "read_node_subtree",
+      "read_project_deliverables": "read_project_deliverables",
+      "read_project_activity_log": "read_project_activity_log",
+      "read_task_live_log": "read_task_live_log",
+      "create_child_node_under_parent": "create_child_node_under_parent",
+      "set_node_dependency": "set_node_dependency",
+      "release_node_to_pending": "release_node_to_pending",
+      "release_children_and_return_to_pending": "release_children_and_return_to_pending",
+      "abandon_task_so_flow_continues_without_it": "abandon_task_so_flow_continues_without_it",
+      "create_wiki_entry_in_project": "create_wiki_entry_in_project"
+    },
     "unharness-api-ingest": {
       "read_one_node": "read_one_node",
       "read_node_subtree": "read_node_subtree",
