@@ -140,6 +140,7 @@ def test_ingest_surface_excludes_request_minting_and_gated_tools():
     assert not any(name.startswith("request_") for name in ingest_names)
     assert "create_child_node_under_parent" in ingest_names
     assert "create_project_for_work" in ingest_names
+    assert "start_formal_project_planning" in ingest_names
     assert "release_children_and_return_to_pending" in ingest_names
     # It is a strict subset of the full surface.
     assert ingest_names < set(list_digestible_tool_names("unharness-api"))
