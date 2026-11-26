@@ -79,6 +79,31 @@ def _load_read_last_usage():
     return module.read_last_usage
 
 
+def read_first_turn_context_tokens(transcript_path: str) -> int:
+    """The context size of the session's FIRST recorded turn (same measure as the gate:
+    input + cache creation + cache read + output). A fresh session starts with its system
+    prompt and brief already in context; if that alone is at or over the threshold, a
+    handoff cannot bring the next session under it.
+
+    Seen live 2026-11-25: with a threshold below the starting context, every fresh session
+    was refused on its first tool call and handed off again — an endless handoff loop."""
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                usage = ((entry.get("message") or {}).get("usage")) if isinstance(entry, dict) else None
+                if isinstance(usage, dict):
+                    return sum(int(usage.get(key) or 0) for key in (
+                        "input_tokens", "cache_creation_input_tokens",
+                        "cache_read_input_tokens", "output_tokens"))
+    except OSError:
+        return 0
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--threshold", type=int, required=True)
@@ -92,6 +117,14 @@ def main(argv=None) -> int:
         tokens = int(_load_read_last_usage()(str(transcript_path)).get("all_observed_tokens", 0) or 0)
     if tokens < arguments.threshold:
         return 0  # allow: no output
+    if transcript_path and read_first_turn_context_tokens(str(transcript_path)) >= arguments.threshold:
+        # The session STARTED over the threshold: a fresh session would too, so asking for
+        # a handoff can only loop. Let the work continue and say so once per call.
+        print(json.dumps({
+            "systemMessage": "Context threshold is below this session's starting context; "
+                             "handoff skipped (it would loop).",
+        }))
+        return 0
 
     handoff_document_path = handoff_document_path_for_session(
         arguments.handoff_document_directory, payload.get("session_id") or ""

@@ -138,9 +138,11 @@ def test_remote_execution_means_no_hook(tmp_path, fake_gate_script):
 
 # ---- the hook itself -----------------------------------------------------------------
 
-def _run_hook(tmp_path, tokens, tool_name, tool_input, threshold=100):
+def _run_hook(tmp_path, tokens, tool_name, tool_input, threshold=100, first_turn_tokens=10):
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(json.dumps({"message": {"usage": {"input_tokens": tokens}}}) + "\n")
+    transcript.write_text(
+        json.dumps({"message": {"usage": {"input_tokens": first_turn_tokens}}}) + "\n"
+        + json.dumps({"message": {"usage": {"input_tokens": tokens}}}) + "\n")
     payload = {"session_id": "s1", "transcript_path": str(transcript), "cwd": str(tmp_path),
                "tool_name": tool_name, "tool_input": tool_input}
     completed = subprocess.run(
@@ -164,6 +166,14 @@ def test_hook_denies_past_threshold_with_the_handoff_procedure(tmp_path, fake_ga
     assert expected_path in specific["permissionDecisionReason"]
     assert "runner-request" in specific["permissionDecisionReason"]
     assert REQUEST_NAME in specific["permissionDecisionReason"]
+
+
+def test_hook_skips_handoff_when_the_session_started_over_the_threshold(tmp_path, fake_gate_script):
+    # Seen live 2026-11-25: a threshold below the starting context made every fresh
+    # session hand off on its first tool call, forever. Such a session is let through.
+    decision = _run_hook(tmp_path, 150, "Bash", {"command": "ls"}, first_turn_tokens=120)
+    assert decision is None or "hookSpecificOutput" not in decision
+    assert "would loop" in (decision or {}).get("systemMessage", "")
 
 
 def test_hook_lets_through_only_the_write_of_the_handoff_document(tmp_path, fake_gate_script):
